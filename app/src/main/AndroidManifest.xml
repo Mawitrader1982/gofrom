@@ -3,7 +3,13 @@
     <uses-permission android:name="android.permission.health.READ_STEPS" />
     <uses-permission android:name="android.permission.health.READ_SLEEP" />
     <uses-permission android:name="android.permission.health.READ_WEIGHT" />
-    <application android:allowBackup="true" android:label="GoFrom" android:supportsRtl="true" android:theme="@style/Theme.GoFrom">
+    <application
+        android:allowBackup="true"
+        android:icon="@drawable/gofrom_logo"
+        android:roundIcon="@drawable/gofrom_logo"
+        android:label="GoFrom"
+        android:supportsRtl="true"
+        android:theme="@style/Theme.GoFrom">
         <activity android:name=".MainActivity" android:exported="true">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
