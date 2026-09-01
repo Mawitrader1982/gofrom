@@ -6,7 +6,7 @@ plugins {
 
 android {
     namespace = "com.gofrom.app"
-    compileSdk = 35
+    compileSdk = 36
     defaultConfig {
         applicationId = "com.gofrom.app"
         minSdk = 26
