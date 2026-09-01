@@ -9,6 +9,7 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
@@ -21,17 +22,21 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.launch
+import java.time.LocalDate
+import java.time.LocalTime
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import java.util.Locale
@@ -44,7 +49,8 @@ private val Soft = Color(0xFFA9B2B5)
 private val Purple = Color(0xFFB88BDD)
 private val Blue = Color(0xFF65B9E8)
 
-private enum class Screen { Welcome, Home, Workouts, Nutrition, Voice, Insights, Progress, Health, Profile }
+private enum class Screen { Welcome, Login, Home, Workouts, Nutrition, Meals, Voice, Insights, Progress, Health, Profile, EditProfile }
+private data class UserProfile(val name: String, val email: String)
 private enum class Tab(val label: String, val icon: ImageVector, val screen: Screen) {
     Home("Home", Icons.Default.Home, Screen.Home), Workouts("Workouts", Icons.Default.FitnessCenter, Screen.Workouts),
     Nutrition("Nutrition", Icons.Default.Restaurant, Screen.Nutrition), Progress("Progress", Icons.Default.ShowChart, Screen.Progress),
@@ -63,20 +69,26 @@ class MainActivity : ComponentActivity() {
 )
 
 @Composable private fun GoFromApp() {
+    val context = LocalContext.current
+    val prefs = remember { context.getSharedPreferences("gofrom_profile", 0) }
+    var profile by remember { mutableStateOf(prefs.getString("name", null)?.let { UserProfile(it, prefs.getString("email", "").orEmpty()) }) }
     var screen by remember { mutableStateOf(Screen.Welcome) }
     Scaffold(containerColor = Bg, bottomBar = {
         if (screen != Screen.Welcome && screen != Screen.Voice) BottomNav(screen) { screen = it }
     }) { inset -> Box(Modifier.padding(inset).fillMaxSize().background(Bg)) {
         when (screen) {
-            Screen.Welcome -> Welcome { screen = Screen.Home }
-            Screen.Home -> HomeScreen { screen = it }
+            Screen.Welcome -> Welcome({ screen = Screen.Home }, { screen = Screen.Login })
+            Screen.Login -> LoginScreen({ screen = Screen.Welcome }) { name, email -> profile = UserProfile(name, email); prefs.edit().putString("name", name).putString("email", email).apply(); screen = Screen.Home }
+            Screen.Home -> HomeScreen(profile) { screen = it }
             Screen.Workouts -> WorkoutsScreen()
             Screen.Nutrition -> NutritionScreen { screen = it }
+            Screen.Meals -> MealsScreen { screen = Screen.Nutrition }
             Screen.Voice -> VoiceScreen({ screen = Screen.Nutrition }) { screen = Screen.Nutrition }
             Screen.Insights -> InsightsScreen()
             Screen.Progress -> ProgressScreen()
             Screen.Health -> HealthScreen { screen = Screen.Profile }
-            Screen.Profile -> ProfileScreen { screen = it }
+            Screen.Profile -> ProfileScreen(profile) { screen = it }
+            Screen.EditProfile -> EditProfileScreen(profile, { screen = Screen.Profile }) { updated -> profile = updated; prefs.edit().putString("name", updated.name).putString("email", updated.email).apply(); screen = Screen.Profile }
         }
     }}
 }
@@ -89,15 +101,19 @@ class MainActivity : ComponentActivity() {
     }}
 }
 
-@Composable private fun Welcome(start: () -> Unit) {
-    Box(Modifier.fillMaxSize().background(Color(0xFF111B18)).padding(30.dp)) {
-        Column(Modifier.align(Alignment.BottomCenter), verticalArrangement = Arrangement.spacedBy(18.dp)) {
+@Composable private fun Welcome(start: () -> Unit, login: () -> Unit) {
+    Box(Modifier.fillMaxSize().background(Color(0xFF111B18))) {
+        Image(painterResource(R.drawable.gofrom_runner_hero), null, Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
+        Box(Modifier.fillMaxSize().background(Color(0x88000000)))
+        Column(Modifier.align(Alignment.BottomCenter).padding(horizontal = 30.dp), verticalArrangement = Arrangement.spacedBy(18.dp)) {
+            Spacer(Modifier.height(30.dp))
             Text("GoFrom", fontSize = 48.sp, fontWeight = FontWeight.ExtraBold); Text("Become the best version of you.", fontSize = 17.sp)
             Feature(Icons.Default.FitnessCenter, "Workouts", "Smart training plans")
             Feature(Icons.Default.Restaurant, "Nutrition", "AI food logging & insights")
             Feature(Icons.Default.ShowChart, "Progress", "Track. Improve. Succeed.")
             Button(start, Modifier.fillMaxWidth().height(54.dp), shape = RoundedCornerShape(14.dp), colors = ButtonDefaults.buttonColors(Green)) { Text("Get Started", fontWeight = FontWeight.Bold) }
-            Text("Already have an account?  Log in", Modifier.fillMaxWidth(), textAlign = TextAlign.Center, color = Soft)
+            TextButton(login, Modifier.fillMaxWidth()) { Text("Already have an account?  Log in", color = Color.White) }
+            Spacer(Modifier.height(18.dp))
         }
     }
 }
@@ -114,7 +130,14 @@ class MainActivity : ComponentActivity() {
     }
 }
 
-@Composable private fun HomeScreen(go: (Screen) -> Unit) = Page("Good morning,\nMaarten!", { Icon(Icons.Default.Notifications, null) }) {
+private fun greeting(profile: UserProfile?): String {
+    val base = when (LocalTime.now().hour) { in 5..11 -> "Good morning"; in 12..17 -> "Good afternoon"; else -> "Good evening" }
+    return profile?.name?.takeIf { it.isNotBlank() }?.let { "$base,\n$it!" } ?: "$base!"
+}
+
+@Composable private fun HomeScreen(profile: UserProfile?, go: (Screen) -> Unit) {
+    var notificationSeen by remember { mutableStateOf(false) }
+    Page(greeting(profile), { IconButton({ notificationSeen = !notificationSeen }) { Icon(if (notificationSeen) Icons.Default.NotificationsNone else Icons.Default.Notifications, "Notifications") } }) {
     Surface(color = Color(0xFFF1F3F1), contentColor = Color(0xFF172018), shape = RoundedCornerShape(16.dp)) { Column(Modifier.padding(16.dp)) {
         Text("Daily Overview", fontWeight = FontWeight.Bold); Spacer(Modifier.height(14.dp)); Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceAround) {
             Ring("1,850", "Calories left", .68f, Green); Ring("82 g", "Protein left", .55f, Purple); Ring("6,240", "Steps", .62f, Green)
@@ -127,6 +150,7 @@ class MainActivity : ComponentActivity() {
     Text("Quick Actions", fontWeight = FontWeight.Bold, fontSize = 17.sp)
     Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) { Quick(Icons.Default.Restaurant, "Log Food", Modifier.weight(1f)) { go(Screen.Nutrition) }; Quick(Icons.Default.FitnessCenter, "Start Workout", Modifier.weight(1f)) { go(Screen.Workouts) } }
     Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) { Quick(Icons.Default.Mic, "Voice Log", Modifier.weight(1f)) { go(Screen.Voice) }; Quick(Icons.Default.ShowChart, "Progress", Modifier.weight(1f)) { go(Screen.Progress) } }
+    }
 }
 
 @Composable private fun Ring(value: String, label: String, progress: Float, color: Color) = Box(Modifier.size(88.dp), contentAlignment = Alignment.Center) {
@@ -140,6 +164,7 @@ class MainActivity : ComponentActivity() {
 
 @Composable private fun WorkoutsScreen() = Page("Workouts") {
     var rows by remember { mutableStateOf(listOf("Chest Press" to Pair("60", "10"), "Lat Pulldown" to Pair("55", "9"), "Shoulder Press" to Pair("18", "8"), "Triceps Pushdown" to Pair("32", "10"))) }
+    var plankDone by remember { mutableStateOf(false) }; var workoutDone by remember { mutableStateOf(false) }
     Text("Upper Body Strength", fontSize = 21.sp, fontWeight = FontWeight.Bold); Text("10 good reps → increase next workout", color = Green)
     rows.forEachIndexed { index, (name, values) -> Surface(color = Panel, shape = RoundedCornerShape(14.dp)) { Column(Modifier.padding(14.dp)) {
         Text(name, fontWeight = FontWeight.Bold); Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -147,16 +172,32 @@ class MainActivity : ComponentActivity() {
             OutlinedTextField(values.second, { v -> rows = rows.toMutableList().also { it[index] = name to (values.first to v) } }, Modifier.weight(1f), label = { Text("Reps") }, singleLine = true)
         }; Text(if ((values.second.toIntOrNull() ?: 0) >= 10) "Ready to progress" else "Keep current weight", color = if ((values.second.toIntOrNull() ?: 0) >= 10) Green else Soft)
     }} }
-    PlanRow(Icons.Default.Timer, "Plank", "60 seconds", false) {}
-    Button({}, Modifier.fillMaxWidth(), colors = ButtonDefaults.buttonColors(Green)) { Text("Complete Workout") }
+    PlanRow(Icons.Default.Timer, "Plank", if (plankDone) "Completed" else "Tap after 60 seconds", plankDone) { plankDone = !plankDone }
+    Button({ workoutDone = true }, Modifier.fillMaxWidth(), colors = ButtonDefaults.buttonColors(Green)) { Text(if (workoutDone) "Workout Complete ✓" else "Complete Workout") }
 }
 
-@Composable private fun NutritionScreen(go: (Screen) -> Unit) = Page("Nutrition", { Icon(Icons.Default.CalendarMonth, null) }) {
-    Surface(color = Panel, shape = RoundedCornerShape(12.dp)) { Row(Modifier.fillMaxWidth().padding(14.dp), horizontalArrangement = Arrangement.SpaceBetween) { Text("‹"); Text("Today, 1 Jun", fontWeight = FontWeight.Bold); Text("›") } }
-    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceAround) { Text("Log", color = Green); Text("Meals"); Text("Insights", modifier = Modifier.clickable { go(Screen.Insights) }) }
+@Composable private fun NutritionScreen(go: (Screen) -> Unit) {
+    var date by remember { mutableStateOf(LocalDate.now()) }
+    val formatter = remember { DateTimeFormatter.ofPattern("EEE, d MMM", Locale.getDefault()) }
+    Page("Nutrition", { IconButton({ date = LocalDate.now() }) { Icon(Icons.Default.CalendarMonth, "Today") } }) {
+    Surface(color = Panel, shape = RoundedCornerShape(12.dp)) { Row(Modifier.fillMaxWidth().padding(6.dp), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) { IconButton({ date = date.minusDays(1) }) { Icon(Icons.Default.ChevronLeft, "Previous day") }; Text(if (date == LocalDate.now()) "Today, ${date.format(formatter)}" else date.format(formatter), fontWeight = FontWeight.Bold); IconButton({ date = date.plusDays(1) }) { Icon(Icons.Default.ChevronRight, "Next day") } } }
+    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceAround) { Text("Log", color = Green); Text("Meals", modifier = Modifier.clickable { go(Screen.Meals) }); Text("Insights", modifier = Modifier.clickable { go(Screen.Insights) }) }
     Text("Calories", fontWeight = FontWeight.Bold); LinearProgressIndicator(.75f, Modifier.fillMaxWidth(), color = Green); Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) { Text("1,650 / 2,200 kcal"); Text("550 kcal left", color = Soft) }
     listOf("Breakfast" to "Greek Yoghurt with Berries", "Lunch" to "Grilled Chicken Salad", "Dinner" to "Salmon with Quinoa & Veg", "Snacks" to "Protein Shake").forEach { (meal, food) -> FoodRow(meal, food) }
     Button({ go(Screen.Voice) }, Modifier.fillMaxWidth().height(54.dp), colors = ButtonDefaults.buttonColors(Green)) { Icon(Icons.Default.Mic, null); Spacer(Modifier.width(8.dp)); Text("Log Food") }
+    }
+}
+
+@Composable private fun MealsScreen(back: () -> Unit) {
+    var mealName by remember { mutableStateOf("") }; var calories by remember { mutableStateOf("") }
+    var meals by remember { mutableStateOf(listOf("High-protein breakfast" to "420 kcal", "Chicken power bowl" to "610 kcal", "Greek yoghurt snack" to "280 kcal")) }
+    Page("Meals", { IconButton(back) { Icon(Icons.Default.ArrowBack, "Back") } }) {
+        Text("Saved meals", color = Soft)
+        meals.forEach { (name, kcal) -> Surface(Modifier.fillMaxWidth().clickable { mealName = name; calories = kcal.filter(Char::isDigit) }, color = Panel, shape = RoundedCornerShape(12.dp)) { Row(Modifier.padding(16.dp), horizontalArrangement = Arrangement.SpaceBetween) { Text(name); Text(kcal, color = Green) } } }
+        OutlinedTextField(mealName, { mealName = it }, Modifier.fillMaxWidth(), label = { Text("Meal name") })
+        OutlinedTextField(calories, { calories = it.filter(Char::isDigit) }, Modifier.fillMaxWidth(), label = { Text("Calories") })
+        Button({ if (mealName.isNotBlank()) { meals = meals + (mealName to "${calories.ifBlank { "0" }} kcal"); mealName = ""; calories = "" } }, Modifier.fillMaxWidth(), enabled = mealName.isNotBlank(), colors = ButtonDefaults.buttonColors(Green)) { Text("Save meal") }
+    }
 }
 
 @Composable private fun FoodRow(meal: String, food: String) { var edit by remember { mutableStateOf(false) }; var value by remember { mutableStateOf(food) }; Column { Text(meal, fontWeight = FontWeight.Bold); Surface(Modifier.fillMaxWidth().clickable { edit = true }, color = Panel, shape = RoundedCornerShape(12.dp)) { Row(Modifier.padding(13.dp), verticalAlignment = Alignment.CenterVertically) { Icon(Icons.Default.Restaurant, null, tint = Green); Spacer(Modifier.width(10.dp)); Column(Modifier.weight(1f)) { Text(value); Text("Tap to edit", color = Soft, fontSize = 11.sp) }; Icon(Icons.Default.Add, null, tint = Green) } }; if (edit) OutlinedTextField(value, { value = it }, Modifier.fillMaxWidth(), trailingIcon = { IconButton({ edit = false }) { Icon(Icons.Default.Check, null) } }) } }
@@ -175,7 +216,7 @@ class MainActivity : ComponentActivity() {
 }
 
 @Composable private fun InsightsScreen() = Page("Nutrition Insights") {
-    Text("This Week", color = Soft); Surface(color = Panel, shape = RoundedCornerShape(14.dp)) { Column(Modifier.padding(16.dp)) { SectionTitle("Calorie Intake", "1,950 avg") {}; BarChart() } }
+    Text("This Week", color = Soft); Surface(color = Panel, shape = RoundedCornerShape(14.dp)) { Column(Modifier.padding(16.dp)) { Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) { Text("Calorie Intake", fontWeight = FontWeight.Bold); Text("1,950 avg", color = Green) }; BarChart() } }
     Surface(color = Panel, shape = RoundedCornerShape(14.dp)) { Row(Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) { Ring("Macros", "", .74f, Blue); Spacer(Modifier.width(22.dp)); Column { Text("● Protein   120g (25%)", color = Blue); Text("● Carbs      220g (45%)", color = Green); Text("● Fats          80g (30%)", color = Purple) } } }
     Text("Top Foods", fontWeight = FontWeight.Bold); FoodRow("", "Chicken Breast · 4 servings"); FoodRow("", "Greek Yoghurt · 3 servings"); FoodRow("", "Banana · 3 servings")
 }
@@ -183,35 +224,57 @@ class MainActivity : ComponentActivity() {
 @Composable private fun BarChart() = Row(Modifier.fillMaxWidth().height(145.dp), horizontalArrangement = Arrangement.SpaceAround, verticalAlignment = Alignment.Bottom) { listOf(.55f,.7f,.86f,.72f,.74f,.73f,.62f).forEachIndexed { i, h -> Column(horizontalAlignment = Alignment.CenterHorizontally) { Box(Modifier.width(14.dp).fillMaxHeight(h).background(Green, RoundedCornerShape(3.dp))); Text(listOf("M","T","W","T","F","S","S")[i], fontSize = 10.sp, color = Soft) } } }
 
 @Composable private fun ProgressScreen() = Page("Progress") {
-    Text("Your results", fontSize = 20.sp, fontWeight = FontWeight.Bold); Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) { listOf("7D","30D","3M","1Y").forEach { AssistChip({}, { Text(it) }) } }
-    MetricCard("Strength", "Chest press  50 → 65 kg", "+30%")
-    MetricCard("Body weight", "94.2 → 92.4 kg", "−1.8 kg")
-    MetricCard("Training", "14 workouts", "92% completed")
-    MetricCard("Sleep", "7h 18m average", "Stable")
+    var period by remember { mutableStateOf("7D") }
+    val values = mapOf("7D" to listOf("+2%", "−0.2 kg", "3 workouts", "7h 18m"), "30D" to listOf("+8%", "−1.8 kg", "14 workouts", "7h 11m"), "3M" to listOf("+18%", "−3.6 kg", "42 workouts", "7h 06m"), "1Y" to listOf("+30%", "−7.9 kg", "168 workouts", "7h 14m"))
+    val current = values.getValue(period)
+    Text("Your results", fontSize = 20.sp, fontWeight = FontWeight.Bold); Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) { values.keys.forEach { item -> FilterChip(selected = period == item, onClick = { period = item }, label = { Text(item) }) } }
+    MetricCard("Strength", "Chest press progression", current[0])
+    MetricCard("Body weight", "Weight change", current[1])
+    MetricCard("Training", current[2], "Completed")
+    MetricCard("Sleep", "${current[3]} average", "")
 }
 @Composable private fun MetricCard(title: String, value: String, change: String) = Surface(color = Panel, shape = RoundedCornerShape(14.dp)) { Row(Modifier.fillMaxWidth().padding(18.dp), horizontalArrangement = Arrangement.SpaceBetween) { Column { Text(title, color = Soft); Text(value, fontWeight = FontWeight.Bold) }; Text(change, color = Green) } }
 
 @Composable private fun HealthScreen(back: () -> Unit) {
     val context = LocalContext.current; val manager = remember { HealthConnectManager(context) }; val scope = rememberCoroutineScope(); var granted by remember { mutableStateOf<Set<String>>(emptySet()) }; var data by remember { mutableStateOf(HealthSnapshot()) }
-    val permissionLauncher = rememberLauncherForActivityResult(manager.permissionContract()) { result -> granted = result; scope.launch { data = manager.sync() } }
-    LaunchedEffect(Unit) { granted = manager.grantedPermissions(); if (granted.containsAll(manager.permissions)) data = manager.sync() }
+    val permissionLauncher = rememberLauncherForActivityResult(manager.permissionContract()) { result -> granted = result; if (result.isNotEmpty()) scope.launch { data = manager.sync(result) } }
+    LaunchedEffect(Unit) { granted = manager.grantedPermissions(); if (granted.isNotEmpty()) data = manager.sync(granted) }
     Page("Google Health", { IconButton(back) { Icon(Icons.Default.ArrowBack, null) } }) {
         Icon(Icons.Default.Favorite, null, tint = Green, modifier = Modifier.align(Alignment.CenterHorizontally).size(95.dp))
-        Text(if (granted.containsAll(manager.permissions)) "Connected" else "Permission required", Modifier.fillMaxWidth(), textAlign = TextAlign.Center, fontSize = 20.sp)
+        Text(when { manager.availability() != androidx.health.connect.client.HealthConnectClient.SDK_AVAILABLE -> "Health Connect unavailable"; granted.containsAll(manager.permissions) -> "Connected"; granted.isNotEmpty() -> "Partly connected"; else -> "Permission required" }, Modifier.fillMaxWidth(), textAlign = TextAlign.Center, fontSize = 20.sp)
         data.lastSynced?.let { Text("Last synced: ${DateTimeFormatter.ofPattern("HH:mm").withZone(ZoneId.systemDefault()).format(it)}", Modifier.fillMaxWidth(), textAlign = TextAlign.Center, color = Soft) }
         listOf("Steps" to data.steps.toString(), "Heart Rate" to (data.heartRate?.let { "$it bpm" } ?: "—"), "Sleep" to "${data.sleepMinutes / 60}h ${data.sleepMinutes % 60}m", "Calories" to "${data.calories} kcal", "Weight" to (data.weightKg?.let { "%.1f kg".format(it) } ?: "—")).forEach { (label, value) -> Surface(color = Panel, shape = RoundedCornerShape(12.dp)) { Row(Modifier.fillMaxWidth().padding(15.dp), horizontalArrangement = Arrangement.SpaceBetween) { Text(label); Text(value, color = Green) } } }
         data.error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
-        Button({ if (!granted.containsAll(manager.permissions)) permissionLauncher.launch(manager.permissions) else scope.launch { data = manager.sync() } }, Modifier.fillMaxWidth(), colors = ButtonDefaults.buttonColors(Green)) { Text(if (granted.containsAll(manager.permissions)) "Sync Now" else "Connect Health Connect") }
+        Button({ if (!granted.containsAll(manager.permissions)) permissionLauncher.launch(manager.permissions) else scope.launch { data = manager.sync(granted) } }, Modifier.fillMaxWidth(), enabled = manager.availability() == androidx.health.connect.client.HealthConnectClient.SDK_AVAILABLE, colors = ButtonDefaults.buttonColors(Green)) { Text(if (granted.containsAll(manager.permissions)) "Sync Now" else "Connect Health Connect") }
     }
 }
 
-@Composable private fun ProfileScreen(go: (Screen) -> Unit) = Page("Profile", { Icon(Icons.Default.Settings, null) }) {
+@Composable private fun ProfileScreen(profile: UserProfile?, go: (Screen) -> Unit) = Page("Profile", { IconButton({ go(Screen.EditProfile) }) { Icon(Icons.Default.Settings, "Edit profile") } }) {
     Surface(Modifier.align(Alignment.CenterHorizontally).size(92.dp), shape = CircleShape, color = Panel2) { Icon(Icons.Default.Person, null, modifier = Modifier.padding(18.dp)) }
-    Text("Maarten", Modifier.fillMaxWidth(), textAlign = TextAlign.Center, fontSize = 23.sp, fontWeight = FontWeight.Bold); Text("Level 12", Modifier.fillMaxWidth(), textAlign = TextAlign.Center, color = Green)
+    Text(profile?.name ?: "No profile yet", Modifier.fillMaxWidth(), textAlign = TextAlign.Center, fontSize = 23.sp, fontWeight = FontWeight.Bold); Text(if (profile == null) "Log in or create a profile" else "Level 1", Modifier.fillMaxWidth().clickable { go(Screen.EditProfile) }, textAlign = TextAlign.Center, color = Green)
     Text("Goals", fontWeight = FontWeight.Bold); Text("Build muscle"); LinearProgressIndicator(.8f, Modifier.fillMaxWidth(), color = Green); Text("Lose body fat"); LinearProgressIndicator(.85f, Modifier.fillMaxWidth(), color = Green)
     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) { Metric("Workouts", "48", Modifier.weight(1f)); Metric("Total Time", "32h", Modifier.weight(1f)); Metric("Streak", "14 days", Modifier.weight(1f)) }
-    listOf("Achievements", "Measurements", "Settings", "Help & Support").forEach { item -> Surface(Modifier.fillMaxWidth().clickable { if (item == "Measurements") go(Screen.Health) }, color = Panel, shape = RoundedCornerShape(12.dp)) { Row(Modifier.padding(16.dp), horizontalArrangement = Arrangement.SpaceBetween) { Text(item); Icon(Icons.Default.ChevronRight, null) } } }
+    listOf("Achievements", "Measurements", "Settings", "Help & Support").forEach { item -> Surface(Modifier.fillMaxWidth().clickable { when (item) { "Measurements" -> go(Screen.Health); "Settings" -> go(Screen.EditProfile); else -> go(Screen.Progress) } }, color = Panel, shape = RoundedCornerShape(12.dp)) { Row(Modifier.padding(16.dp), horizontalArrangement = Arrangement.SpaceBetween) { Text(item); Icon(Icons.Default.ChevronRight, null) } } }
     Button({ go(Screen.Health) }, Modifier.fillMaxWidth(), colors = ButtonDefaults.buttonColors(Green)) { Text("Google Health Sync") }
+}
+
+@Composable private fun LoginScreen(back: () -> Unit, save: (String, String) -> Unit) {
+    var name by remember { mutableStateOf("") }; var email by remember { mutableStateOf("") }
+    Page("Log in or create profile", { IconButton(back) { Icon(Icons.Default.ArrowBack, "Back") } }) {
+        Text("Your name is only shown after you create a profile.", color = Soft)
+        OutlinedTextField(name, { name = it }, Modifier.fillMaxWidth(), label = { Text("Name") }, singleLine = true)
+        OutlinedTextField(email, { email = it }, Modifier.fillMaxWidth(), label = { Text("Email") }, singleLine = true)
+        Button({ save(name.trim(), email.trim()) }, Modifier.fillMaxWidth(), enabled = name.isNotBlank() && email.contains("@"), colors = ButtonDefaults.buttonColors(Green)) { Text("Continue") }
+    }
+}
+
+@Composable private fun EditProfileScreen(profile: UserProfile?, back: () -> Unit, save: (UserProfile) -> Unit) {
+    var name by remember(profile) { mutableStateOf(profile?.name.orEmpty()) }; var email by remember(profile) { mutableStateOf(profile?.email.orEmpty()) }
+    Page("Profile settings", { IconButton(back) { Icon(Icons.Default.ArrowBack, "Back") } }) {
+        OutlinedTextField(name, { name = it }, Modifier.fillMaxWidth(), label = { Text("Name") }, singleLine = true)
+        OutlinedTextField(email, { email = it }, Modifier.fillMaxWidth(), label = { Text("Email") }, singleLine = true)
+        Button({ save(UserProfile(name.trim(), email.trim())) }, Modifier.fillMaxWidth(), enabled = name.isNotBlank() && email.contains("@"), colors = ButtonDefaults.buttonColors(Green)) { Text("Save profile") }
+    }
 }
 
 @Composable private fun Metric(label: String, value: String, modifier: Modifier) = Surface(modifier, color = Panel, shape = RoundedCornerShape(12.dp)) { Column(Modifier.padding(12.dp), horizontalAlignment = Alignment.CenterHorizontally) { Text(label, color = Soft, fontSize = 11.sp); Text(value, fontWeight = FontWeight.Bold) } }
