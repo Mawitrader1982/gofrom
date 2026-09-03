@@ -53,6 +53,34 @@ private val Purple = Color(0xFFB88BDD)
 private val Blue = Color(0xFF65B9E8)
 
 private enum class Screen { Welcome, Login, Home, Workouts, Nutrition, Meals, Voice, Insights, Progress, Health, Profile, EditProfile }
+private data class ExercisePlan(val name: String, val prescription: String, val usesWeight: Boolean = true)
+private data class WorkoutDay(val key: String, val shortLabel: String, val title: String, val focus: String, val exercises: List<ExercisePlan>)
+
+private val workoutPlan = listOf(
+    WorkoutDay("monday", "Mon", "Monday · Push", "Chest, shoulders & triceps", listOf(
+        ExercisePlan("Chest press", "3 sets × 8–10 reps"), ExercisePlan("Incline chest press", "3 sets × 8–10 reps"),
+        ExercisePlan("Shoulder press", "3 sets × 8–10 reps"), ExercisePlan("Lateral raise", "3 sets × 12–15 reps"),
+        ExercisePlan("Triceps pushdown", "3 sets × 10–12 reps"), ExercisePlan("Overhead triceps extension", "3 sets × 10–12 reps"),
+        ExercisePlan("Plank", "3 sets × 60 seconds", false)
+    )),
+    WorkoutDay("tuesday", "Tue", "Tuesday · Pull", "Back & biceps", listOf(
+        ExercisePlan("Lat pulldown", "3 sets × 8–10 reps"), ExercisePlan("Seated cable row", "3 sets × 8–10 reps"),
+        ExercisePlan("Chest-supported row", "3 sets × 8–10 reps"), ExercisePlan("Reverse fly", "3 sets × 12–15 reps"),
+        ExercisePlan("Biceps curl", "3 sets × 10–12 reps"), ExercisePlan("Hammer curl", "3 sets × 10–12 reps"),
+        ExercisePlan("Plank", "3 sets × 60 seconds", false)
+    )),
+    WorkoutDay("thursday", "Thu", "Thursday · Legs", "Legs & glutes", listOf(
+        ExercisePlan("Leg press", "4 sets × 8–10 reps"), ExercisePlan("Leg curl", "3 sets × 10–12 reps"),
+        ExercisePlan("Leg extension", "3 sets × 10–12 reps"), ExercisePlan("Hip thrust", "3 sets × 8–12 reps"),
+        ExercisePlan("Calf raise", "3 sets × 12–15 reps"), ExercisePlan("Plank", "3 sets × 60 seconds", false)
+    )),
+    WorkoutDay("friday", "Fri", "Friday · Full body", "Compound work & extra triceps", listOf(
+        ExercisePlan("Goblet squat", "3 sets × 10 reps"), ExercisePlan("Chest press", "3 sets × 8–10 reps"),
+        ExercisePlan("Lat pulldown", "3 sets × 8–10 reps"), ExercisePlan("Romanian deadlift", "3 sets × 8–10 reps"),
+        ExercisePlan("Shoulder press", "3 sets × 8–10 reps"), ExercisePlan("Triceps pushdown", "3 sets × 10–12 reps"),
+        ExercisePlan("Plank", "3 sets × 60 seconds", false)
+    ))
+)
 private enum class Tab(val label: String, val icon: ImageVector, val screen: Screen) {
     Home("Home", Icons.Default.Home, Screen.Home), Workouts("Workouts", Icons.Default.FitnessCenter, Screen.Workouts),
     Nutrition("Nutrition", Icons.Default.Restaurant, Screen.Nutrition), Progress("Progress", Icons.Default.ShowChart, Screen.Progress),
@@ -87,7 +115,7 @@ class MainActivity : ComponentActivity() {
                 storage.saveProfiles(profiles); currentProfileId = created.id; storage.setCurrentProfile(created.id); screen = Screen.Home
             }
             Screen.Home -> HomeScreen(profile, profile?.let { storage.meals(it.id) }.orEmpty()) { screen = it }
-            Screen.Workouts -> WorkoutsScreen()
+            Screen.Workouts -> WorkoutsScreen(profile, storage)
             Screen.Nutrition -> NutritionScreen(profile?.let { storage.meals(it.id) }.orEmpty()) { screen = it }
             Screen.Meals -> MealsScreen(profile, storage) { screen = Screen.Nutrition }
             Screen.Voice -> VoiceScreen({ screen = Screen.Nutrition }) { screen = Screen.Nutrition }
@@ -185,11 +213,44 @@ private fun greeting(profile: StoredProfile?): String {
 @Composable private fun PlanRow(icon: ImageVector, title: String, sub: String, done: Boolean, click: () -> Unit) = Surface(Modifier.fillMaxWidth().clickable(onClick = click), color = Panel, shape = RoundedCornerShape(13.dp)) { Row(Modifier.padding(13.dp), verticalAlignment = Alignment.CenterVertically) { Icon(icon, null, tint = Green, modifier = Modifier.size(38.dp)); Spacer(Modifier.width(12.dp)); Column(Modifier.weight(1f)) { Text(title, fontWeight = FontWeight.Bold); Text(sub, color = Soft, fontSize = 12.sp) }; Icon(if (done) Icons.Default.CheckCircle else Icons.Default.DonutLarge, null, tint = Green) } }
 @Composable private fun Quick(icon: ImageVector, label: String, modifier: Modifier, click: () -> Unit) = Surface(modifier.clickable(onClick = click), color = Panel2, shape = RoundedCornerShape(12.dp)) { Row(Modifier.padding(15.dp), verticalAlignment = Alignment.CenterVertically) { Icon(icon, null, tint = if (label == "Voice Log") Color.White else Green); Spacer(Modifier.width(9.dp)); Text(label, fontWeight = FontWeight.SemiBold) } }
 
-@Composable private fun WorkoutsScreen() = Page("Workouts") {
-    Surface(color = Panel, shape = RoundedCornerShape(14.dp)) { Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        Icon(Icons.Default.FitnessCenter, null, tint = Green)
-        Text("No workouts yet", fontSize = 20.sp, fontWeight = FontWeight.Bold)
-        Text("Your logged workouts will appear here. Nothing is pre-filled.", color = Soft)
+@Composable private fun WorkoutsScreen(profile: StoredProfile?, storage: AppStorage) {
+    val todayKey = when (LocalDate.now().dayOfWeek) {
+        java.time.DayOfWeek.TUESDAY -> "tuesday"; java.time.DayOfWeek.THURSDAY -> "thursday"; java.time.DayOfWeek.FRIDAY -> "friday"; else -> "monday"
+    }
+    var selectedKey by remember { mutableStateOf(todayKey) }
+    val selected = workoutPlan.first { it.key == selectedKey }
+    Page("Workouts") {
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(7.dp)) {
+            workoutPlan.forEach { day -> FilterChip(selected = selectedKey == day.key, onClick = { selectedKey = day.key }, label = { Text(day.shortLabel) }, modifier = Modifier.weight(1f)) }
+        }
+        Text(selected.title, fontSize = 21.sp, fontWeight = FontWeight.Bold)
+        Text(selected.focus, color = Green)
+        Surface(color = Panel2, shape = RoundedCornerShape(12.dp)) { Column(Modifier.padding(14.dp)) {
+            Text("5–10 min warm-up · 60–90 sec rest", fontWeight = FontWeight.SemiBold)
+            Text("Complete every work set at the top of the rep range with good form → increase the weight next time.", color = Soft, fontSize = 12.sp)
+            Text("For variety, alternate equivalent machine, cable or dumbbell versions every 4–6 weeks while keeping the same movement and rep range.", color = Soft, fontSize = 12.sp)
+        } }
+        if (profile == null) Text("Create a profile to record weights, results and completed exercises.", color = MaterialTheme.colorScheme.error)
+        selected.exercises.forEach { exercise -> ExerciseLogCard(profile, selected.key, exercise, storage) }
+    }
+}
+
+@Composable private fun ExerciseLogCard(profile: StoredProfile?, dayKey: String, exercise: ExercisePlan, storage: AppStorage) {
+    val saved = remember(profile?.id, dayKey, exercise.name) { profile?.let { storage.exerciseLogs(it.id, dayKey).firstOrNull { log -> log.exerciseName == exercise.name } } }
+    var weight by remember(profile?.id, dayKey, exercise.name) { mutableStateOf(saved?.weight.orEmpty()) }
+    var result by remember(profile?.id, dayKey, exercise.name) { mutableStateOf(saved?.result.orEmpty()) }
+    var completed by remember(profile?.id, dayKey, exercise.name) { mutableStateOf(saved?.completed ?: false) }
+    fun persist() { profile?.let { storage.saveExerciseLog(StoredExerciseLog(it.id, dayKey, exercise.name, weight, result, completed)) } }
+    Surface(color = Panel, shape = RoundedCornerShape(14.dp)) { Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f)) { Text(exercise.name, fontWeight = FontWeight.Bold); Text(exercise.prescription, color = Soft, fontSize = 12.sp) }
+            Checkbox(checked = completed, onCheckedChange = { completed = it; persist() }, enabled = profile != null)
+        }
+        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            if (exercise.usesWeight) OutlinedTextField(weight, { weight = it.filter { char -> char.isDigit() || char == '.' || char == ',' }; persist() }, Modifier.weight(1f), label = { Text("Weight kg") }, singleLine = true, enabled = profile != null)
+            OutlinedTextField(result, { result = it; persist() }, Modifier.weight(1f), label = { Text(if (exercise.usesWeight) "Reps per set" else "Seconds per set") }, singleLine = true, enabled = profile != null)
+        }
+        saved?.updatedDate?.takeIf { weight.isNotBlank() || result.isNotBlank() || completed }?.let { Text("Last saved: $it", color = Soft, fontSize = 10.sp) }
     } }
 }
 
