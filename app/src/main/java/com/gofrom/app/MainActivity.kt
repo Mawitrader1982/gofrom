@@ -24,6 +24,9 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.CornerRadius
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
@@ -53,32 +56,59 @@ private val Purple = Color(0xFFB88BDD)
 private val Blue = Color(0xFF65B9E8)
 
 private enum class Screen { Welcome, Login, Home, Workouts, Nutrition, Meals, Voice, Insights, Progress, Health, Profile, EditProfile }
-private data class ExercisePlan(val name: String, val prescription: String, val usesWeight: Boolean = true)
+private enum class ExerciseEquipment(val label: String) {
+    MACHINE("Machine"), CABLE("Cable"), DUMBBELL("Dumbbells"), BODYWEIGHT("Bodyweight")
+}
+private enum class ExerciseVisual {
+    CHEST_PRESS, INCLINE_PRESS, SHOULDER_PRESS, DUMBBELLS, CABLE_PUSH,
+    LAT_PULLDOWN, SEATED_ROW, DUMBBELL_ROW, PEC_DECK, LEG_PRESS, LEG_CURL,
+    LEG_EXTENSION, HIP_THRUST, CALF_RAISE, PLANK
+}
+private data class ExercisePlan(
+    val name: String,
+    val prescription: String,
+    val equipment: ExerciseEquipment,
+    val visual: ExerciseVisual,
+    val usesWeight: Boolean = true,
+    val youtubeUrl: String? = null,
+)
 private data class WorkoutDay(val key: String, val shortLabel: String, val title: String, val focus: String, val exercises: List<ExercisePlan>)
 
 private val workoutPlan = listOf(
     WorkoutDay("monday", "Mon", "Monday · Push", "Chest, shoulders & triceps", listOf(
-        ExercisePlan("Chest press", "3 sets × 8–10 reps"), ExercisePlan("Incline chest press", "3 sets × 8–10 reps"),
-        ExercisePlan("Shoulder press", "3 sets × 8–10 reps"), ExercisePlan("Lateral raise", "3 sets × 12–15 reps"),
-        ExercisePlan("Triceps pushdown", "3 sets × 10–12 reps"), ExercisePlan("Overhead triceps extension", "3 sets × 10–12 reps"),
-        ExercisePlan("Plank", "3 sets × 60 seconds", false)
+        ExercisePlan("Chest press", "3 sets × 8–10 reps", ExerciseEquipment.MACHINE, ExerciseVisual.CHEST_PRESS),
+        ExercisePlan("Incline chest press", "3 sets × 8–10 reps", ExerciseEquipment.MACHINE, ExerciseVisual.INCLINE_PRESS),
+        ExercisePlan("Shoulder press", "3 sets × 8–10 reps", ExerciseEquipment.MACHINE, ExerciseVisual.SHOULDER_PRESS),
+        ExercisePlan("Lateral raise", "3 sets × 12–15 reps", ExerciseEquipment.DUMBBELL, ExerciseVisual.DUMBBELLS, youtubeUrl = "https://www.youtube.com/watch?v=3VcKaXpzqRo"),
+        ExercisePlan("Triceps pushdown", "3 sets × 10–12 reps", ExerciseEquipment.CABLE, ExerciseVisual.CABLE_PUSH),
+        ExercisePlan("Overhead triceps extension", "3 sets × 10–12 reps", ExerciseEquipment.DUMBBELL, ExerciseVisual.DUMBBELLS, youtubeUrl = "https://www.youtube.com/watch?v=-Vyt2QdsR7E"),
+        ExercisePlan("Plank", "3 sets × 60 seconds", ExerciseEquipment.BODYWEIGHT, ExerciseVisual.PLANK, false)
     )),
     WorkoutDay("tuesday", "Tue", "Tuesday · Pull", "Back & biceps", listOf(
-        ExercisePlan("Lat pulldown", "3 sets × 8–10 reps"), ExercisePlan("Seated cable row", "3 sets × 8–10 reps"),
-        ExercisePlan("Chest-supported row", "3 sets × 8–10 reps"), ExercisePlan("Reverse fly", "3 sets × 12–15 reps"),
-        ExercisePlan("Biceps curl", "3 sets × 10–12 reps"), ExercisePlan("Hammer curl", "3 sets × 10–12 reps"),
-        ExercisePlan("Plank", "3 sets × 60 seconds", false)
+        ExercisePlan("Lat pulldown", "3 sets × 8–10 reps", ExerciseEquipment.CABLE, ExerciseVisual.LAT_PULLDOWN),
+        ExercisePlan("Seated cable row", "3 sets × 8–10 reps", ExerciseEquipment.CABLE, ExerciseVisual.SEATED_ROW),
+        ExercisePlan("Chest-supported row", "3 sets × 8–10 reps", ExerciseEquipment.DUMBBELL, ExerciseVisual.DUMBBELL_ROW, youtubeUrl = "https://www.youtube.com/watch?v=_b6ch2nIchk"),
+        ExercisePlan("Reverse fly", "3 sets × 12–15 reps", ExerciseEquipment.MACHINE, ExerciseVisual.PEC_DECK),
+        ExercisePlan("Biceps curl", "3 sets × 10–12 reps", ExerciseEquipment.DUMBBELL, ExerciseVisual.DUMBBELLS, youtubeUrl = "https://www.youtube.com/watch?v=in7PaeYlhrM"),
+        ExercisePlan("Hammer curl", "3 sets × 10–12 reps", ExerciseEquipment.DUMBBELL, ExerciseVisual.DUMBBELLS, youtubeUrl = "https://www.youtube.com/watch?v=BRVDS6HVR9Q"),
+        ExercisePlan("Plank", "3 sets × 60 seconds", ExerciseEquipment.BODYWEIGHT, ExerciseVisual.PLANK, false)
     )),
     WorkoutDay("thursday", "Thu", "Thursday · Legs", "Legs & glutes", listOf(
-        ExercisePlan("Leg press", "4 sets × 8–10 reps"), ExercisePlan("Leg curl", "3 sets × 10–12 reps"),
-        ExercisePlan("Leg extension", "3 sets × 10–12 reps"), ExercisePlan("Hip thrust", "3 sets × 8–12 reps"),
-        ExercisePlan("Calf raise", "3 sets × 12–15 reps"), ExercisePlan("Plank", "3 sets × 60 seconds", false)
+        ExercisePlan("Leg press", "4 sets × 8–10 reps", ExerciseEquipment.MACHINE, ExerciseVisual.LEG_PRESS),
+        ExercisePlan("Leg curl", "3 sets × 10–12 reps", ExerciseEquipment.MACHINE, ExerciseVisual.LEG_CURL),
+        ExercisePlan("Leg extension", "3 sets × 10–12 reps", ExerciseEquipment.MACHINE, ExerciseVisual.LEG_EXTENSION),
+        ExercisePlan("Hip thrust", "3 sets × 8–12 reps", ExerciseEquipment.MACHINE, ExerciseVisual.HIP_THRUST),
+        ExercisePlan("Calf raise", "3 sets × 12–15 reps", ExerciseEquipment.MACHINE, ExerciseVisual.CALF_RAISE),
+        ExercisePlan("Plank", "3 sets × 60 seconds", ExerciseEquipment.BODYWEIGHT, ExerciseVisual.PLANK, false)
     )),
     WorkoutDay("friday", "Fri", "Friday · Full body", "Compound work & extra triceps", listOf(
-        ExercisePlan("Goblet squat", "3 sets × 10 reps"), ExercisePlan("Chest press", "3 sets × 8–10 reps"),
-        ExercisePlan("Lat pulldown", "3 sets × 8–10 reps"), ExercisePlan("Romanian deadlift", "3 sets × 8–10 reps"),
-        ExercisePlan("Shoulder press", "3 sets × 8–10 reps"), ExercisePlan("Triceps pushdown", "3 sets × 10–12 reps"),
-        ExercisePlan("Plank", "3 sets × 60 seconds", false)
+        ExercisePlan("Goblet squat", "3 sets × 10 reps", ExerciseEquipment.DUMBBELL, ExerciseVisual.DUMBBELLS, youtubeUrl = "https://www.youtube.com/watch?v=2LnkzQ7paAc"),
+        ExercisePlan("Chest press", "3 sets × 8–10 reps", ExerciseEquipment.MACHINE, ExerciseVisual.CHEST_PRESS),
+        ExercisePlan("Lat pulldown", "3 sets × 8–10 reps", ExerciseEquipment.CABLE, ExerciseVisual.LAT_PULLDOWN),
+        ExercisePlan("Romanian deadlift", "3 sets × 8–10 reps", ExerciseEquipment.DUMBBELL, ExerciseVisual.DUMBBELLS, youtubeUrl = "https://www.youtube.com/watch?v=hQgFixeXdZo"),
+        ExercisePlan("Shoulder press", "3 sets × 8–10 reps", ExerciseEquipment.MACHINE, ExerciseVisual.SHOULDER_PRESS),
+        ExercisePlan("Triceps pushdown", "3 sets × 10–12 reps", ExerciseEquipment.CABLE, ExerciseVisual.CABLE_PUSH),
+        ExercisePlan("Plank", "3 sets × 60 seconds", ExerciseEquipment.BODYWEIGHT, ExerciseVisual.PLANK, false)
     ))
 )
 private enum class Tab(val label: String, val icon: ImageVector, val screen: Screen) {
@@ -260,6 +290,7 @@ private fun <T> HealthMetric<T>.dashboardText(format: (T) -> String): String =
 }
 
 @Composable private fun ExerciseLogCard(profile: StoredProfile?, dayKey: String, exercise: ExercisePlan, storage: AppStorage) {
+    val context = LocalContext.current
     val saved = remember(profile?.id, dayKey, exercise.name) { profile?.let { storage.exerciseLogs(it.id, dayKey).firstOrNull { log -> log.exerciseName == exercise.name } } }
     var weight by remember(profile?.id, dayKey, exercise.name) { mutableStateOf(saved?.weight.orEmpty()) }
     var result by remember(profile?.id, dayKey, exercise.name) { mutableStateOf(saved?.result.orEmpty()) }
@@ -267,8 +298,24 @@ private fun <T> HealthMetric<T>.dashboardText(format: (T) -> String): String =
     fun persist() { profile?.let { storage.saveExerciseLog(StoredExerciseLog(it.id, dayKey, exercise.name, weight, result, completed)) } }
     Surface(color = Panel, shape = RoundedCornerShape(14.dp)) { Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-            Column(Modifier.weight(1f)) { Text(exercise.name, fontWeight = FontWeight.Bold); Text(exercise.prescription, color = Soft, fontSize = 12.sp) }
+            ExerciseIllustration(exercise.visual, exercise.equipment, Modifier.size(width = 116.dp, height = 86.dp))
+            Spacer(Modifier.width(12.dp))
+            Column(Modifier.weight(1f)) {
+                Text(exercise.name, fontWeight = FontWeight.Bold)
+                Text(exercise.prescription, color = Soft, fontSize = 12.sp)
+            }
             Checkbox(checked = completed, onCheckedChange = { completed = it; persist() }, enabled = profile != null)
+        }
+        exercise.youtubeUrl?.let { url ->
+            FilledTonalButton(
+                onClick = { runCatching { context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url))) } },
+                modifier = Modifier.fillMaxWidth(),
+                colors = ButtonDefaults.filledTonalButtonColors(containerColor = Color(0xFF26352B), contentColor = Green),
+            ) {
+                Icon(Icons.Default.PlayCircle, null)
+                Spacer(Modifier.width(8.dp))
+                Text("Watch dumbbell technique on YouTube", fontWeight = FontWeight.SemiBold)
+            }
         }
         Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
             if (exercise.usesWeight) OutlinedTextField(weight, { weight = it.filter { char -> char.isDigit() || char == '.' || char == ',' }; persist() }, Modifier.weight(1f), label = { Text("Weight kg") }, singleLine = true, enabled = profile != null)
@@ -276,6 +323,120 @@ private fun <T> HealthMetric<T>.dashboardText(format: (T) -> String): String =
         }
         saved?.updatedDate?.takeIf { weight.isNotBlank() || result.isNotBlank() || completed }?.let { Text("Last saved: $it", color = Soft, fontSize = 10.sp) }
     } }
+}
+
+@Composable private fun ExerciseIllustration(
+    visual: ExerciseVisual,
+    equipment: ExerciseEquipment,
+    modifier: Modifier = Modifier,
+) {
+    Box(modifier.clip(RoundedCornerShape(12.dp)).background(Color(0xFF0B1519))) {
+        Canvas(Modifier.fillMaxSize().padding(horizontal = 10.dp, vertical = 12.dp)) {
+            val w = size.width
+            val h = size.height
+            val ink = Color(0xFFDCE4E6)
+            val accent = Green
+            val stroke = 2.7.dp.toPx()
+            fun line(x1: Float, y1: Float, x2: Float, y2: Float, color: Color = ink, width: Float = stroke) {
+                drawLine(color, Offset(w * x1, h * y1), Offset(w * x2, h * y2), width, StrokeCap.Round)
+            }
+            fun box(x: Float, y: Float, width: Float, height: Float, color: Color = ink) {
+                drawRoundRect(
+                    color = color,
+                    topLeft = Offset(w * x, h * y),
+                    size = Size(w * width, h * height),
+                    cornerRadius = CornerRadius(4.dp.toPx()),
+                    style = Stroke(stroke),
+                )
+            }
+            fun frame() {
+                line(.16f, .12f, .16f, .88f, accent)
+                line(.16f, .12f, .84f, .12f, accent)
+                line(.84f, .12f, .84f, .88f, accent)
+                box(.10f, .70f, .12f, .18f, accent)
+            }
+            fun seat(x: Float = .42f, y: Float = .57f) {
+                line(x, y, x + .24f, y, ink, stroke * 1.35f)
+                line(x + .04f, y, x + .04f, y + .25f)
+                line(x + .21f, y, x + .21f, y + .25f)
+            }
+            when (visual) {
+                ExerciseVisual.CHEST_PRESS -> {
+                    frame(); seat(); line(.42f, .34f, .42f, .60f, accent, stroke * 1.5f)
+                    line(.36f, .35f, .72f, .35f); line(.36f, .29f, .36f, .48f); line(.72f, .29f, .72f, .48f)
+                    line(.16f, .22f, .36f, .35f, accent)
+                }
+                ExerciseVisual.INCLINE_PRESS -> {
+                    frame(); line(.38f, .64f, .62f, .36f, accent, stroke * 1.7f)
+                    line(.35f, .67f, .70f, .67f); line(.41f, .67f, .34f, .86f); line(.66f, .67f, .73f, .86f)
+                    line(.42f, .25f, .76f, .25f); line(.42f, .20f, .42f, .34f); line(.76f, .20f, .76f, .34f)
+                }
+                ExerciseVisual.SHOULDER_PRESS -> {
+                    frame(); seat(.41f, .61f); line(.41f, .35f, .41f, .63f, accent, stroke * 1.5f)
+                    line(.35f, .26f, .35f, .48f); line(.35f, .26f, .48f, .26f)
+                    line(.74f, .26f, .74f, .48f); line(.61f, .26f, .74f, .26f)
+                }
+                ExerciseVisual.DUMBBELLS -> {
+                    line(.18f, .50f, .82f, .50f, accent, stroke * 1.5f)
+                    box(.13f, .31f, .10f, .38f); box(.25f, .37f, .09f, .26f)
+                    box(.66f, .37f, .09f, .26f); box(.77f, .31f, .10f, .38f)
+                }
+                ExerciseVisual.CABLE_PUSH -> {
+                    frame(); line(.16f, .20f, .62f, .35f, accent); drawCircle(ink, stroke * 1.6f, Offset(w * .62f, h * .35f))
+                    line(.62f, .35f, .62f, .62f); line(.53f, .62f, .71f, .62f); line(.53f, .62f, .49f, .74f); line(.71f, .62f, .75f, .74f)
+                }
+                ExerciseVisual.LAT_PULLDOWN -> {
+                    frame(); line(.16f, .22f, .50f, .22f, accent); line(.50f, .22f, .50f, .34f)
+                    line(.28f, .34f, .72f, .34f, ink, stroke * 1.35f); seat(.39f, .66f); line(.37f, .59f, .66f, .59f, accent, stroke * 1.5f)
+                }
+                ExerciseVisual.SEATED_ROW -> {
+                    frame(); seat(.48f, .64f); line(.16f, .32f, .43f, .57f, accent); drawCircle(ink, stroke * 1.6f, Offset(w * .43f, h * .57f))
+                    line(.39f, .53f, .47f, .61f); line(.39f, .61f, .47f, .53f); line(.35f, .78f, .48f, .78f, accent, stroke * 1.5f)
+                }
+                ExerciseVisual.DUMBBELL_ROW -> {
+                    line(.25f, .68f, .72f, .40f, accent, stroke * 1.8f); line(.31f, .68f, .22f, .86f); line(.67f, .44f, .78f, .78f)
+                    line(.28f, .28f, .61f, .28f); box(.20f, .17f, .08f, .22f); box(.61f, .17f, .08f, .22f)
+                }
+                ExerciseVisual.PEC_DECK -> {
+                    frame(); seat(); line(.42f, .33f, .42f, .60f, accent, stroke * 1.5f)
+                    line(.42f, .35f, .28f, .24f); line(.28f, .24f, .28f, .54f)
+                    line(.42f, .35f, .70f, .24f); line(.70f, .24f, .70f, .54f)
+                }
+                ExerciseVisual.LEG_PRESS -> {
+                    line(.24f, .82f, .69f, .22f, accent, stroke * 1.7f); line(.66f, .16f, .82f, .30f, ink, stroke * 2f)
+                    line(.23f, .63f, .43f, .79f, ink, stroke * 2f); line(.28f, .65f, .18f, .82f); line(.43f, .79f, .58f, .88f)
+                    box(.71f, .17f, .10f, .18f, accent)
+                }
+                ExerciseVisual.LEG_CURL -> {
+                    frame(); seat(.38f, .48f); line(.38f, .24f, .38f, .51f, accent, stroke * 1.5f)
+                    line(.56f, .56f, .73f, .72f); drawCircle(accent, stroke * 2.7f, Offset(w * .77f, h * .75f)); line(.56f, .56f, .67f, .49f)
+                }
+                ExerciseVisual.LEG_EXTENSION -> {
+                    frame(); seat(.38f, .48f); line(.38f, .24f, .38f, .51f, accent, stroke * 1.5f)
+                    line(.58f, .56f, .58f, .78f); line(.58f, .78f, .76f, .78f); drawCircle(accent, stroke * 2.7f, Offset(w * .80f, h * .78f))
+                }
+                ExerciseVisual.HIP_THRUST -> {
+                    line(.18f, .66f, .51f, .66f, accent, stroke * 1.8f); line(.22f, .66f, .22f, .84f); line(.47f, .66f, .47f, .84f)
+                    line(.45f, .58f, .79f, .58f, ink, stroke * 1.6f); drawCircle(accent, stroke * 3f, Offset(w * .42f, h * .58f)); drawCircle(accent, stroke * 3f, Offset(w * .82f, h * .58f))
+                    line(.47f, .58f, .62f, .35f); line(.62f, .35f, .78f, .58f)
+                }
+                ExerciseVisual.CALF_RAISE -> {
+                    frame(); line(.37f, .32f, .69f, .32f, accent, stroke * 1.7f); line(.37f, .32f, .37f, .46f); line(.69f, .32f, .69f, .46f)
+                    line(.51f, .45f, .51f, .75f); line(.51f, .75f, .64f, .75f); line(.42f, .83f, .70f, .83f, accent, stroke * 1.8f)
+                }
+                ExerciseVisual.PLANK -> {
+                    drawCircle(accent, stroke * 2.8f, Offset(w * .77f, h * .34f)); line(.30f, .45f, .69f, .39f, ink, stroke * 1.7f)
+                    line(.30f, .45f, .17f, .70f); line(.17f, .70f, .31f, .70f); line(.69f, .39f, .61f, .66f); line(.61f, .66f, .79f, .66f)
+                    line(.12f, .78f, .88f, .78f, accent)
+                }
+            }
+        }
+        Surface(
+            modifier = Modifier.align(Alignment.BottomEnd).padding(5.dp),
+            color = Color(0xDD182327),
+            shape = RoundedCornerShape(6.dp),
+        ) { Text(equipment.label, color = Color.White, fontSize = 9.sp, modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)) }
+    }
 }
 
 @Composable private fun NutritionScreen(meals: List<StoredMeal>, go: (Screen) -> Unit) {
