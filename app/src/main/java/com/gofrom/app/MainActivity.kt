@@ -1,4 +1,3 @@
-39277 app/src/main/java/com/gofrom/app/MainActivity.kt
 package com.gofrom.app
 
 import android.app.Activity
