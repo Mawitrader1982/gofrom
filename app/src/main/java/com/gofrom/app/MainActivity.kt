@@ -1,3 +1,4 @@
+39277 app/src/main/java/com/gofrom/app/MainActivity.kt
 package com.gofrom.app
 
 import android.app.Activity
@@ -114,7 +115,7 @@ class MainActivity : ComponentActivity() {
                 val created = StoredProfile(name = name, email = email); profiles = profiles + created
                 storage.saveProfiles(profiles); currentProfileId = created.id; storage.setCurrentProfile(created.id); screen = Screen.Home
             }
-            Screen.Home -> HomeScreen(profile, profile?.let { storage.meals(it.id) }.orEmpty()) { screen = it }
+            Screen.Home -> HomeScreen(profile, profile?.let { storage.meals(it.id) }.orEmpty(), storage) { screen = it }
             Screen.Workouts -> WorkoutsScreen(profile, storage)
             Screen.Nutrition -> NutritionScreen(profile?.let { storage.meals(it.id) }.orEmpty()) { screen = it }
             Screen.Meals -> MealsScreen(profile, storage) { screen = Screen.Nutrition }
@@ -173,24 +174,28 @@ private fun greeting(profile: StoredProfile?): String {
     return profile?.name?.takeIf { it.isNotBlank() }?.let { "$base,\n$it!" } ?: "$base!"
 }
 
-@Composable private fun HomeScreen(profile: StoredProfile?, meals: List<StoredMeal>, go: (Screen) -> Unit) {
+@Composable private fun HomeScreen(profile: StoredProfile?, meals: List<StoredMeal>, storage: AppStorage, go: (Screen) -> Unit) {
     var notificationSeen by remember { mutableStateOf(false) }
     val context = LocalContext.current
     val health = remember { HealthConnectManager(context) }
     var snapshot by remember { mutableStateOf(HealthSnapshot()) }
     var healthConnected by remember { mutableStateOf(false) }
     LaunchedEffect(Unit) {
-        val granted = health.grantedPermissions(); healthConnected = granted.isNotEmpty()
+        val granted = health.grantedPermissions(); healthConnected = health.hasAnyMetricPermission(granted)
         if (healthConnected) snapshot = health.sync(granted)
     }
     val todayMeals = meals.filter { it.date == LocalDate.now().toString() }
-    val calories = todayMeals.mapNotNull { it.calories }.sum()
+    val loggedCalories = todayMeals.mapNotNull { it.calories }
+    val calories = loggedCalories.sum()
+    val todayWorkout = workoutPlan.firstOrNull { it.key == LocalDate.now().dayOfWeek.name.lowercase(Locale.ROOT) }
+    val workoutLogs = if (profile != null && todayWorkout != null) storage.exerciseLogs(profile.id, todayWorkout.key) else emptyList()
+    val completedExercises = workoutLogs.count { it.completed }
     Page(greeting(profile), { IconButton({ notificationSeen = !notificationSeen }) { Icon(if (notificationSeen) Icons.Default.NotificationsNone else Icons.Default.Notifications, "Notifications") } }) {
     Surface(color = Color(0xFFF1F3F1), contentColor = Color(0xFF172018), shape = RoundedCornerShape(16.dp)) { Column(Modifier.padding(16.dp)) {
         Text("Daily Overview", fontWeight = FontWeight.Bold); Spacer(Modifier.height(14.dp)); Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceAround) {
-            Ring(if (todayMeals.isEmpty()) "—" else calories.toString(), "Logged kcal", 0f, Green)
-            Ring(if (healthConnected) snapshot.steps.toString() else "—", "Health steps", 0f, Green)
-            Ring(if (healthConnected) "${snapshot.sleepMinutes / 60}h" else "—", "Health sleep", 0f, Blue)
+            Ring(if (loggedCalories.isEmpty()) "—" else calories.toString(), "Kcal logged today", Green, loggedCalories.isNotEmpty())
+            Ring(snapshot.stepsToday.dashboardText { it.toString() }, "Steps today", Green, snapshot.stepsToday.state == HealthDataState.AVAILABLE)
+            Ring(snapshot.lastNightSleepMinutes.dashboardText { "${it / 60}h ${it % 60}m" }, "Last sleep", Blue, snapshot.lastNightSleepMinutes.state == HealthDataState.AVAILABLE)
         }
     }}
     if (!healthConnected) Surface(color = Panel, shape = RoundedCornerShape(14.dp)) { Column(Modifier.padding(16.dp)) {
@@ -198,14 +203,34 @@ private fun greeting(profile: StoredProfile?): String {
         TextButton({ go(Screen.Health) }) { Text("Connect Health Connect") }
     } }
     if (todayMeals.isEmpty()) Text("No meals logged today.", color = Soft)
+    SectionTitle("Today's Plan", "Open workouts") { go(Screen.Workouts) }
+    if (todayWorkout == null) {
+        Surface(color = Panel, shape = RoundedCornerShape(14.dp)) { Row(Modifier.fillMaxWidth().padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
+            Surface(color = Panel2, shape = CircleShape) { Icon(Icons.Default.SelfImprovement, null, tint = Green, modifier = Modifier.padding(11.dp)) }
+            Spacer(Modifier.width(12.dp)); Column { Text("Recovery day", fontWeight = FontWeight.Bold); Text("No workout scheduled today.", color = Soft, fontSize = 12.sp) }
+        } }
+    } else {
+        PlanRow(
+            Icons.Default.FitnessCenter,
+            todayWorkout.title,
+            "${todayWorkout.focus} · $completedExercises/${todayWorkout.exercises.size} completed",
+            completedExercises == todayWorkout.exercises.size,
+        ) { go(Screen.Workouts) }
+    }
     Text("Quick Actions", fontWeight = FontWeight.Bold, fontSize = 17.sp)
     Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) { Quick(Icons.Default.Restaurant, "Log Food", Modifier.weight(1f)) { go(Screen.Meals) }; Quick(Icons.Default.FitnessCenter, "Workouts", Modifier.weight(1f)) { go(Screen.Workouts) } }
     Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) { Quick(Icons.Default.Favorite, "Health", Modifier.weight(1f)) { go(Screen.Health) }; Quick(Icons.Default.ShowChart, "Progress", Modifier.weight(1f)) { go(Screen.Progress) } }
     }
 }
 
-@Composable private fun Ring(value: String, label: String, progress: Float, color: Color) = Box(Modifier.size(88.dp), contentAlignment = Alignment.Center) {
-    Canvas(Modifier.fillMaxSize()) { drawArc(Color(0xFFD6DCD7), -90f, 360f, false, style = Stroke(7.dp.toPx(), cap = StrokeCap.Round)); drawArc(color, -90f, progress * 360, false, style = Stroke(7.dp.toPx(), cap = StrokeCap.Round)) }
+private fun <T> HealthMetric<T>.dashboardText(format: (T) -> String): String =
+    if (state == HealthDataState.AVAILABLE && value != null) format(value) else "—"
+
+@Composable private fun Ring(value: String, label: String, color: Color, hasData: Boolean) = Box(Modifier.size(88.dp), contentAlignment = Alignment.Center) {
+    Canvas(Modifier.fillMaxSize()) {
+        drawArc(Color(0xFFD6DCD7), -90f, 360f, false, style = Stroke(7.dp.toPx(), cap = StrokeCap.Round))
+        if (hasData) drawArc(color, -90f, 360f, false, style = Stroke(7.dp.toPx(), cap = StrokeCap.Round))
+    }
     Column(horizontalAlignment = Alignment.CenterHorizontally) { Text(value, fontWeight = FontWeight.ExtraBold, fontSize = 17.sp); Text(label, fontSize = 9.sp, textAlign = TextAlign.Center) }
 }
 
@@ -342,33 +367,89 @@ private fun greeting(profile: StoredProfile?): String {
 
 @Composable private fun HealthScreen(back: () -> Unit) {
     val context = LocalContext.current; val manager = remember { HealthConnectManager(context) }; val scope = rememberCoroutineScope(); var granted by remember { mutableStateOf<Set<String>>(emptySet()) }; var data by remember { mutableStateOf(HealthSnapshot()) }; var connectionError by remember { mutableStateOf<String?>(null) }
-    val permissionLauncher = rememberLauncherForActivityResult(manager.permissionContract()) { result ->
-        granted = result
-        connectionError = if (result.isEmpty()) "No access was granted. You can try again and select the data you want to share." else null
-        if (result.isNotEmpty()) scope.launch { data = manager.sync(result) }
+    val permissionLauncher = rememberLauncherForActivityResult(manager.permissionContract()) {
+        scope.launch {
+            granted = manager.grantedPermissions()
+            connectionError = if (!manager.hasAnyMetricPermission(granted)) "No access was granted. You can try again and select the data you want to share." else null
+            data = manager.sync(granted)
+        }
     }
-    LaunchedEffect(Unit) { granted = manager.grantedPermissions(); if (granted.isNotEmpty()) data = manager.sync(granted) }
-    Page("Google Health", { IconButton(back) { Icon(Icons.Default.ArrowBack, null) } }) {
-        Icon(Icons.Default.Favorite, null, tint = Green, modifier = Modifier.align(Alignment.CenterHorizontally).size(95.dp))
-        Text(when { manager.availability() != androidx.health.connect.client.HealthConnectClient.SDK_AVAILABLE -> "Health Connect unavailable"; granted.containsAll(manager.permissions) -> "Connected"; granted.isNotEmpty() -> "Partly connected"; else -> "Permission required" }, Modifier.fillMaxWidth(), textAlign = TextAlign.Center, fontSize = 20.sp)
+    LaunchedEffect(Unit) {
+        granted = manager.grantedPermissions()
+        data = manager.sync(granted)
+    }
+    Page("Health Connect", { IconButton(back) { Icon(Icons.Default.ArrowBack, "Back") } }) {
+        Surface(Modifier.align(Alignment.CenterHorizontally).size(104.dp), color = Color(0xFF183621), shape = CircleShape) {
+            Box(contentAlignment = Alignment.Center) { Icon(Icons.Default.HealthAndSafety, null, tint = Green, modifier = Modifier.size(62.dp)) }
+        }
+        Text(when {
+            manager.availability() != androidx.health.connect.client.HealthConnectClient.SDK_AVAILABLE -> "Health Connect unavailable"
+            manager.hasAllMetricPermissions(granted) -> "Connected"
+            manager.hasAnyMetricPermission(granted) -> "Partly connected"
+            else -> "Permission required"
+        }, Modifier.fillMaxWidth(), textAlign = TextAlign.Center, fontSize = 21.sp, fontWeight = FontWeight.Bold)
         data.lastSynced?.let { Text("Last synced: ${DateTimeFormatter.ofPattern("HH:mm").withZone(ZoneId.systemDefault()).format(it)}", Modifier.fillMaxWidth(), textAlign = TextAlign.Center, color = Soft) }
-        val hasAccess = granted.isNotEmpty()
-        listOf(
-            "Steps" to if (hasAccess) data.steps.toString() else "—",
-            "Heart Rate" to if (hasAccess) (data.heartRate?.let { "$it bpm" } ?: "—") else "—",
-            "Sleep" to if (hasAccess) "${data.sleepMinutes / 60}h ${data.sleepMinutes % 60}m" else "—",
-            "Calories" to if (hasAccess) "${data.calories} kcal" else "—",
-            "Weight" to if (hasAccess) (data.weightKg?.let { "%.1f kg".format(it) } ?: "—") else "—"
-        ).forEach { (label, value) -> Surface(color = Panel, shape = RoundedCornerShape(12.dp)) { Row(Modifier.fillMaxWidth().padding(15.dp), horizontalArrangement = Arrangement.SpaceBetween) { Text(label); Text(value, color = Green) } } }
+        Text("Synced data", fontWeight = FontWeight.Bold, fontSize = 18.sp)
+        Text("Activity and sleep totals follow the source priorities you set in Health Connect.", color = Soft, fontSize = 12.sp)
+        HealthMetricRow(Icons.Default.DirectionsWalk, "Steps", "Today", data.stepsToday) { it.toString() }
+        HealthMetricRow(Icons.Default.FavoriteBorder, "Heart rate", "Latest measurement in the past 24 hours", data.latestHeartRate) { "$it bpm" }
+        HealthMetricRow(Icons.Default.Bedtime, "Sleep", "Last night · 18:00–12:00", data.lastNightSleepMinutes) { "${it / 60}h ${it % 60}m" }
+        HealthMetricRow(Icons.Default.LocalFireDepartment, "Active calories", "Burned today", data.activeCaloriesToday) { "$it kcal" }
+        HealthMetricRow(Icons.Default.MonitorWeight, "Weight", "Latest measurement in the past 30 days", data.latestWeightKg) { "%.1f kg".format(it) }
         (connectionError ?: data.error)?.let { Text(it, color = MaterialTheme.colorScheme.error) }
         Button({
             connectionError = null
-            if (!granted.containsAll(manager.permissions)) {
+            if (!manager.hasAllMetricPermissions(granted)) {
                 runCatching { permissionLauncher.launch(manager.permissions) }
                     .onFailure { connectionError = "Health Connect could not be opened: ${it.message ?: "unknown error"}" }
             } else scope.launch { data = manager.sync(granted) }
-        }, Modifier.fillMaxWidth(), enabled = manager.availability() == androidx.health.connect.client.HealthConnectClient.SDK_AVAILABLE, colors = ButtonDefaults.buttonColors(Green)) { Text(if (granted.containsAll(manager.permissions)) "Sync Now" else "Connect Health Connect") }
+        }, Modifier.fillMaxWidth().height(54.dp), shape = RoundedCornerShape(16.dp), enabled = manager.availability() == androidx.health.connect.client.HealthConnectClient.SDK_AVAILABLE, colors = ButtonDefaults.buttonColors(Green)) { Text(if (manager.hasAllMetricPermissions(granted)) "Sync Now" else "Manage Health Connect access", fontWeight = FontWeight.Bold) }
     }
+}
+
+@Composable private fun <T> HealthMetricRow(
+    icon: ImageVector,
+    title: String,
+    period: String,
+    metric: HealthMetric<T>,
+    format: (T) -> String
+) = Surface(color = Panel, shape = RoundedCornerShape(16.dp)) {
+    Row(Modifier.fillMaxWidth().padding(15.dp), verticalAlignment = Alignment.CenterVertically) {
+        Surface(color = Panel2, shape = CircleShape) { Icon(icon, null, tint = Green, modifier = Modifier.padding(10.dp).size(22.dp)) }
+        Spacer(Modifier.width(12.dp))
+        Column(Modifier.weight(1f)) {
+            Text(title, fontWeight = FontWeight.SemiBold)
+            Text(metric.healthDetail(period), color = Soft, fontSize = 11.sp)
+        }
+        Text(metric.healthValue(format), color = if (metric.state == HealthDataState.AVAILABLE) Green else Soft, fontWeight = FontWeight.Bold)
+        Spacer(Modifier.width(8.dp))
+        Icon(
+            when (metric.state) {
+                HealthDataState.AVAILABLE -> Icons.Default.CheckCircle
+                HealthDataState.ERROR -> Icons.Default.Error
+                HealthDataState.PERMISSION_REQUIRED -> Icons.Default.Lock
+                HealthDataState.NO_DATA -> Icons.Default.RemoveCircleOutline
+            },
+            null,
+            tint = if (metric.state == HealthDataState.AVAILABLE) Green else Soft,
+            modifier = Modifier.size(19.dp)
+        )
+    }
+}
+
+private fun <T> HealthMetric<T>.healthValue(format: (T) -> String): String = when {
+    state == HealthDataState.AVAILABLE && value != null -> format(value)
+    state == HealthDataState.PERMISSION_REQUIRED -> "No access"
+    state == HealthDataState.ERROR -> "Unavailable"
+    else -> "No data"
+}
+
+private fun HealthMetric<*>.healthDetail(period: String): String = when (state) {
+    HealthDataState.PERMISSION_REQUIRED -> "Permission not granted"
+    HealthDataState.ERROR -> error ?: "Could not be read"
+    else -> measuredAt?.let { instant ->
+        "$period · ${DateTimeFormatter.ofPattern("d MMM, HH:mm").withZone(ZoneId.systemDefault()).format(instant)}"
+    } ?: period
 }
 
 @Composable private fun ProfileScreen(profile: StoredProfile?, profiles: List<StoredProfile>, select: (StoredProfile) -> Unit, go: (Screen) -> Unit) = Page("Profile", { IconButton({ go(Screen.EditProfile) }) { Icon(Icons.Default.Settings, "Edit profile") } }) {
@@ -381,7 +462,7 @@ private fun greeting(profile: StoredProfile?): String {
     }
     Button({ go(Screen.EditProfile) }, Modifier.fillMaxWidth(), colors = ButtonDefaults.buttonColors(Panel2)) { Text(if (profile == null) "Create profile" else "Edit profile") }
     Button({ go(Screen.Login) }, Modifier.fillMaxWidth(), colors = ButtonDefaults.buttonColors(Panel2)) { Icon(Icons.Default.PersonAdd, null); Spacer(Modifier.width(8.dp)); Text("Add another user") }
-    Button({ go(Screen.Health) }, Modifier.fillMaxWidth(), colors = ButtonDefaults.buttonColors(Green)) { Text("Google Health Sync") }
+    Button({ go(Screen.Health) }, Modifier.fillMaxWidth(), colors = ButtonDefaults.buttonColors(Green)) { Text("Health Connect") }
 }
 
 @Composable private fun LoginScreen(back: () -> Unit, save: (String, String) -> Unit) {
