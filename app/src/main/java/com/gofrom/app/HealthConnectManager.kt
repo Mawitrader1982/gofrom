@@ -2,18 +2,24 @@ package com.gofrom.app
 
 import android.content.Context
 import androidx.health.connect.client.HealthConnectClient
+import androidx.health.connect.client.HealthConnectFeatures
 import androidx.health.connect.client.PermissionController
 import androidx.health.connect.client.permission.HealthPermission
+import androidx.health.connect.client.permission.HealthPermission.Companion.PERMISSION_READ_HEALTH_DATA_HISTORY
 import androidx.health.connect.client.records.ActiveCaloriesBurnedRecord
 import androidx.health.connect.client.records.HeartRateRecord
 import androidx.health.connect.client.records.SleepSessionRecord
 import androidx.health.connect.client.records.StepsRecord
 import androidx.health.connect.client.records.WeightRecord
 import androidx.health.connect.client.request.AggregateRequest
+import androidx.health.connect.client.request.AggregateGroupByPeriodRequest
 import androidx.health.connect.client.request.ReadRecordsRequest
 import androidx.health.connect.client.time.TimeRangeFilter
 import java.time.Instant
+import java.time.LocalDateTime
 import java.time.LocalTime
+import java.time.Period
+import java.time.YearMonth
 import java.time.ZoneId
 import java.time.temporal.ChronoUnit
 import kotlin.math.roundToInt
@@ -37,7 +43,30 @@ data class HealthSnapshot(
     val error: String? = null
 )
 
+data class HealthMonthPoint(
+    val month: YearMonth,
+    val steps: Long? = null,
+    val activeCalories: Int? = null,
+    val sleepMinutes: Long? = null,
+    val averageHeartRate: Long? = null,
+    val averageWeightKg: Double? = null
+)
+
+data class HealthYearSnapshot(
+    val months: List<HealthMonthPoint> = emptyList(),
+    val totalSteps: HealthMetric<Long> = HealthMetric(),
+    val totalActiveCalories: HealthMetric<Int> = HealthMetric(),
+    val recordedSleepMinutes: HealthMetric<Long> = HealthMetric(),
+    val averageHeartRate: HealthMetric<Long> = HealthMetric(),
+    val averageWeightKg: HealthMetric<Double> = HealthMetric(),
+    val historySupported: Boolean = true,
+    val historyAccessGranted: Boolean = false,
+    val lastSynced: Instant? = null,
+    val error: String? = null
+)
+
 data class HealthTimeRange(val start: Instant, val end: Instant)
+data class HealthLocalTimeRange(val start: LocalDateTime, val end: LocalDateTime)
 
 internal object HealthTimeRanges {
     fun today(now: Instant, zoneId: ZoneId): HealthTimeRange {
@@ -56,6 +85,12 @@ internal object HealthTimeRanges {
         val start = today.minusDays(1).atTime(18, 0).atZone(zoneId).toInstant()
         return HealthTimeRange(start, end)
     }
+
+    fun lastTwelveCalendarMonths(now: Instant, zoneId: ZoneId): HealthLocalTimeRange {
+        val localNow = now.atZone(zoneId).toLocalDateTime()
+        val start = localNow.toLocalDate().withDayOfMonth(1).minusMonths(11).atStartOfDay()
+        return HealthLocalTimeRange(start, localNow)
+    }
 }
 
 class HealthConnectManager(private val context: Context) {
@@ -64,12 +99,19 @@ class HealthConnectManager(private val context: Context) {
     private val sleepPermission = HealthPermission.getReadPermission(SleepSessionRecord::class)
     private val caloriesPermission = HealthPermission.getReadPermission(ActiveCaloriesBurnedRecord::class)
     private val weightPermission = HealthPermission.getReadPermission(WeightRecord::class)
-    val permissions = setOf(stepsPermission, heartPermission, sleepPermission, caloriesPermission, weightPermission)
+    private val metricPermissions = setOf(stepsPermission, heartPermission, sleepPermission, caloriesPermission, weightPermission)
+    val permissions: Set<String>
+        get() = metricPermissions + if (supportsHistoryRead()) setOf(PERMISSION_READ_HEALTH_DATA_HISTORY) else emptySet()
 
     fun availability(): Int = HealthConnectClient.getSdkStatus(context)
     fun permissionContract() = PermissionController.createRequestPermissionResultContract()
-    fun hasAnyMetricPermission(granted: Set<String>): Boolean = permissions.any(granted::contains)
+    fun hasAnyMetricPermission(granted: Set<String>): Boolean = metricPermissions.any(granted::contains)
     fun hasAllMetricPermissions(granted: Set<String>): Boolean = permissions.all(granted::contains)
+    fun hasHistoryPermission(granted: Set<String>): Boolean = PERMISSION_READ_HEALTH_DATA_HISTORY in granted
+    fun supportsHistoryRead(): Boolean = availability() == HealthConnectClient.SDK_AVAILABLE && runCatching {
+        client().features.getFeatureStatus(HealthConnectFeatures.FEATURE_READ_HEALTH_DATA_HISTORY) ==
+            HealthConnectFeatures.FEATURE_STATUS_AVAILABLE
+    }.getOrDefault(false)
 
     private fun client() = HealthConnectClient.getOrCreate(context)
 
@@ -155,6 +197,129 @@ class HealthConnectManager(private val context: Context) {
         )
     }
 
+    suspend fun syncYear(
+        granted: Set<String>,
+        now: Instant = Instant.now(),
+        zoneId: ZoneId = ZoneId.systemDefault()
+    ): HealthYearSnapshot {
+        val range = HealthTimeRanges.lastTwelveCalendarMonths(now, zoneId)
+        val startMonth = YearMonth.from(range.start)
+        val months = (0L..11L).map(startMonth::plusMonths)
+        val historySupported = supportsHistoryRead()
+        val historyGranted = hasHistoryPermission(granted)
+        if (!historySupported || !historyGranted) {
+            return HealthYearSnapshot(
+                months = months.map { HealthMonthPoint(it) },
+                totalSteps = unavailableYearMetric(stepsPermission in granted, historySupported),
+                totalActiveCalories = unavailableYearMetric(caloriesPermission in granted, historySupported),
+                recordedSleepMinutes = unavailableYearMetric(sleepPermission in granted, historySupported),
+                averageHeartRate = unavailableYearMetric(heartPermission in granted, historySupported),
+                averageWeightKg = unavailableYearMetric(weightPermission in granted, historySupported),
+                historySupported = historySupported,
+                historyAccessGranted = false,
+                lastSynced = now
+            )
+        }
+
+        val hc = runCatching { client() }.getOrElse {
+            return HealthYearSnapshot(
+                months = months.map { HealthMonthPoint(it) },
+                historySupported = true,
+                historyAccessGranted = true,
+                lastSynced = now,
+                error = it.message ?: "Year history could not be synchronized"
+            )
+        }
+
+        val steps = readYearValues(stepsPermission in granted) {
+            hc.aggregateGroupByPeriod(
+                AggregateGroupByPeriodRequest(
+                    metrics = setOf(StepsRecord.COUNT_TOTAL),
+                    timeRangeFilter = TimeRangeFilter.between(range.start, range.end),
+                    timeRangeSlicer = Period.ofMonths(1)
+                )
+            ).mapNotNull { bucket ->
+                bucket.result[StepsRecord.COUNT_TOTAL]?.let { YearMonth.from(bucket.startTime) to it }
+            }.toMap()
+        }
+
+        val calories = readYearValues(caloriesPermission in granted) {
+            hc.aggregateGroupByPeriod(
+                AggregateGroupByPeriodRequest(
+                    metrics = setOf(ActiveCaloriesBurnedRecord.ACTIVE_CALORIES_TOTAL),
+                    timeRangeFilter = TimeRangeFilter.between(range.start, range.end),
+                    timeRangeSlicer = Period.ofMonths(1)
+                )
+            ).mapNotNull { bucket ->
+                bucket.result[ActiveCaloriesBurnedRecord.ACTIVE_CALORIES_TOTAL]
+                    ?.inKilocalories
+                    ?.roundToInt()
+                    ?.let { YearMonth.from(bucket.startTime) to it }
+            }.toMap()
+        }
+
+        val sleep = readYearValues(sleepPermission in granted) {
+            hc.aggregateGroupByPeriod(
+                AggregateGroupByPeriodRequest(
+                    metrics = setOf(SleepSessionRecord.SLEEP_DURATION_TOTAL),
+                    timeRangeFilter = TimeRangeFilter.between(range.start, range.end),
+                    timeRangeSlicer = Period.ofMonths(1)
+                )
+            ).mapNotNull { bucket ->
+                bucket.result[SleepSessionRecord.SLEEP_DURATION_TOTAL]
+                    ?.toMinutes()
+                    ?.let { YearMonth.from(bucket.startTime) to it }
+            }.toMap()
+        }
+
+        val heartRate = readYearValues(heartPermission in granted) {
+            hc.aggregateGroupByPeriod(
+                AggregateGroupByPeriodRequest(
+                    metrics = setOf(HeartRateRecord.BPM_AVG),
+                    timeRangeFilter = TimeRangeFilter.between(range.start, range.end),
+                    timeRangeSlicer = Period.ofMonths(1)
+                )
+            ).mapNotNull { bucket ->
+                bucket.result[HeartRateRecord.BPM_AVG]?.let { YearMonth.from(bucket.startTime) to it }
+            }.toMap()
+        }
+
+        val weight = readYearValues(weightPermission in granted) {
+            hc.aggregateGroupByPeriod(
+                AggregateGroupByPeriodRequest(
+                    metrics = setOf(WeightRecord.WEIGHT_AVG),
+                    timeRangeFilter = TimeRangeFilter.between(range.start, range.end),
+                    timeRangeSlicer = Period.ofMonths(1)
+                )
+            ).mapNotNull { bucket ->
+                bucket.result[WeightRecord.WEIGHT_AVG]
+                    ?.inKilograms
+                    ?.let { YearMonth.from(bucket.startTime) to it }
+            }.toMap()
+        }
+
+        return HealthYearSnapshot(
+            months = months.map { month ->
+                HealthMonthPoint(
+                    month = month,
+                    steps = steps.values[month],
+                    activeCalories = calories.values[month],
+                    sleepMinutes = sleep.values[month],
+                    averageHeartRate = heartRate.values[month],
+                    averageWeightKg = weight.values[month]
+                )
+            },
+            totalSteps = steps.summarize { values -> values.sum() },
+            totalActiveCalories = calories.summarize { values -> values.sum() },
+            recordedSleepMinutes = sleep.summarize { values -> values.sum() },
+            averageHeartRate = heartRate.summarize { values -> values.average().roundToInt().toLong() },
+            averageWeightKg = weight.summarize { values -> values.average() },
+            historySupported = true,
+            historyAccessGranted = true,
+            lastSynced = now
+        )
+    }
+
     private suspend fun <T : Any> readMetric(
         hasPermission: Boolean,
         read: suspend () -> TimedValue<T>?
@@ -169,5 +334,36 @@ class HealthConnectManager(private val context: Context) {
         )
     }
 
+    private fun <T> unavailableYearMetric(hasMetricPermission: Boolean, historySupported: Boolean): HealthMetric<T> =
+        if (!hasMetricPermission) HealthMetric(state = HealthDataState.PERMISSION_REQUIRED)
+        else if (!historySupported) HealthMetric(state = HealthDataState.ERROR, error = "Year history is not supported on this device")
+        else HealthMetric(state = HealthDataState.PERMISSION_REQUIRED, error = "Past data access is required")
+
+    private suspend fun <T : Any> readYearValues(
+        hasPermission: Boolean,
+        read: suspend () -> Map<YearMonth, T>
+    ): YearValues<T> {
+        if (!hasPermission) return YearValues(state = HealthDataState.PERMISSION_REQUIRED)
+        return runCatching { read() }.fold(
+            onSuccess = { values ->
+                if (values.isEmpty()) YearValues(state = HealthDataState.NO_DATA)
+                else YearValues(values = values, state = HealthDataState.AVAILABLE)
+            },
+            onFailure = { YearValues(state = HealthDataState.ERROR, error = it.message ?: "Year data could not be read") }
+        )
+    }
+
+    private fun <T : Any, R : Any> YearValues<T>.summarize(summary: (List<T>) -> R): HealthMetric<R> = when (state) {
+        HealthDataState.AVAILABLE -> HealthMetric(value = summary(values.values.toList()), state = HealthDataState.AVAILABLE)
+        HealthDataState.NO_DATA -> HealthMetric(state = HealthDataState.NO_DATA)
+        HealthDataState.PERMISSION_REQUIRED -> HealthMetric(state = HealthDataState.PERMISSION_REQUIRED)
+        HealthDataState.ERROR -> HealthMetric(state = HealthDataState.ERROR, error = error)
+    }
+
     private data class TimedValue<T>(val value: T, val measuredAt: Instant? = null)
+    private data class YearValues<T>(
+        val values: Map<YearMonth, T> = emptyMap(),
+        val state: HealthDataState,
+        val error: String? = null
+    )
 }
