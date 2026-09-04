@@ -13,6 +13,7 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -29,7 +30,10 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.PathEffect
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.drawscope.Stroke
@@ -46,6 +50,7 @@ import java.time.LocalTime
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import java.util.Locale
+import kotlin.math.roundToLong
 
 private val Green = Color(0xFF83D445)
 private val Bg = Color(0xFF071014)
@@ -150,7 +155,7 @@ class MainActivity : ComponentActivity() {
             Screen.Meals -> MealsScreen(profile, storage) { screen = Screen.Nutrition }
             Screen.Voice -> VoiceScreen({ screen = Screen.Nutrition }) { screen = Screen.Nutrition }
             Screen.Insights -> InsightsScreen()
-            Screen.Progress -> ProgressScreen()
+            Screen.Progress -> ProgressScreen { screen = Screen.Health }
             Screen.Health -> HealthScreen { screen = Screen.Profile }
             Screen.Profile -> ProfileScreen(profile, profiles, { selected -> currentProfileId = selected.id; storage.setCurrentProfile(selected.id) }) { screen = it }
             Screen.EditProfile -> EditProfileScreen(profile, { screen = Screen.Profile }) { updated ->
@@ -517,12 +522,345 @@ private fun <T> HealthMetric<T>.dashboardText(format: (T) -> String): String =
 
 @Composable private fun BarChart() = Row(Modifier.fillMaxWidth().height(145.dp), horizontalArrangement = Arrangement.SpaceAround, verticalAlignment = Alignment.Bottom) { listOf(.55f,.7f,.86f,.72f,.74f,.73f,.62f).forEachIndexed { i, h -> Column(horizontalAlignment = Alignment.CenterHorizontally) { Box(Modifier.width(14.dp).fillMaxHeight(h).background(Green, RoundedCornerShape(3.dp))); Text(listOf("M","T","W","T","F","S","S")[i], fontSize = 10.sp, color = Soft) } } }
 
-@Composable private fun ProgressScreen() = Page("Progress") {
-    Surface(color = Panel, shape = RoundedCornerShape(14.dp)) { Column(Modifier.padding(18.dp)) {
-        Text("No progress data yet", fontSize = 20.sp, fontWeight = FontWeight.Bold)
-        Text("Real Health Connect and workout history will appear here once available.", color = Soft)
+private enum class YearMetricView(val label: String, val shortLabel: String) {
+    STEPS("Steps", "Steps"),
+    ACTIVE_CALORIES("Active calories", "Calories"),
+    SLEEP("Recorded sleep", "Sleep"),
+    HEART_RATE("Heart rate", "Heart"),
+    WEIGHT("Weight", "Weight")
+}
+
+private enum class YearChartStyle(val label: String) { TREND("Smooth trend"), HYBRID("Bars + trend") }
+
+@Composable private fun ProgressScreen(openHealth: () -> Unit) {
+    val context = LocalContext.current
+    val manager = remember { HealthConnectManager(context) }
+    val scope = rememberCoroutineScope()
+    var year by remember { mutableStateOf(HealthYearSnapshot()) }
+    var loading by remember { mutableStateOf(true) }
+
+    suspend fun refresh() {
+        loading = true
+        val granted = manager.grantedPermissions()
+        year = manager.syncYear(granted)
+        loading = false
+    }
+
+    LaunchedEffect(Unit) { refresh() }
+    Page("Progress", {
+        IconButton({ scope.launch { refresh() } }, enabled = !loading) { Icon(Icons.Default.Refresh, "Refresh health history") }
+    }) {
+        Text("Health history", fontSize = 21.sp, fontWeight = FontWeight.Bold)
+        Text("Your last 12 calendar months from Health Connect. No sample values are added.", color = Soft, fontSize = 12.sp)
+        when {
+            loading -> Box(Modifier.fillMaxWidth().height(150.dp), contentAlignment = Alignment.Center) { CircularProgressIndicator(color = Green) }
+            !year.historySupported -> HealthYearMessage(
+                icon = Icons.Default.SystemUpdate,
+                title = "Past data is unavailable",
+                text = "Update Android and Health Connect to enable access to data older than 30 days.",
+                button = "Open Health Connect",
+                click = openHealth
+            )
+            !year.historyAccessGranted -> HealthYearMessage(
+                icon = Icons.Default.History,
+                title = "Past data permission required",
+                text = "Allow ‘Access past data’ in Health Connect to build your real 12-month overview.",
+                button = "Manage Health Connect access",
+                click = openHealth
+            )
+            year.hasYearData() -> HealthYearOverview(year)
+            else -> HealthYearMessage(
+                icon = Icons.Default.QueryStats,
+                title = "No historical records found",
+                text = "Health Connect did not return steps, active calories, sleep, heart-rate or weight data for this period.",
+                button = "Check Health Connect",
+                click = openHealth
+            )
+        }
+        year.error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
+    }
+}
+
+private fun HealthYearSnapshot.hasYearData(): Boolean = listOf(
+    totalSteps.state,
+    totalActiveCalories.state,
+    recordedSleepMinutes.state,
+    averageHeartRate.state,
+    averageWeightKg.state
+).any { it == HealthDataState.AVAILABLE }
+
+@Composable private fun HealthYearMessage(icon: ImageVector, title: String, text: String, button: String, click: () -> Unit) {
+    Surface(color = Panel, shape = RoundedCornerShape(16.dp)) { Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        Icon(icon, null, tint = Green, modifier = Modifier.size(34.dp))
+        Text(title, fontSize = 18.sp, fontWeight = FontWeight.Bold)
+        Text(text, color = Soft)
+        Button(click, Modifier.fillMaxWidth(), colors = ButtonDefaults.buttonColors(Green)) { Text(button) }
     } }
 }
+
+@Composable private fun HealthYearOverview(year: HealthYearSnapshot) {
+    val availableMetrics = YearMetricView.entries.filter { metric -> year.months.any { it.valueFor(metric) != null } }
+    var selected by remember(year.lastSynced) { mutableStateOf(availableMetrics.firstOrNull() ?: YearMetricView.STEPS) }
+    var chartStyle by remember { mutableStateOf(YearChartStyle.TREND) }
+    val values = year.months.map { it.valueFor(selected) }
+    val recorded = values.mapIndexedNotNull { index, value -> value?.let { index to it } }
+    val best = recorded.maxByOrNull { it.second }
+    val average = recorded.map { it.second }.average().takeUnless { it.isNaN() }
+
+    Text("Google Health synced", color = Green, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+    Text("Your health story, based only on records available in Health Connect.", color = Soft, fontSize = 12.sp)
+
+    val heroShape = RoundedCornerShape(22.dp)
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .clip(heroShape)
+            .background(Brush.linearGradient(listOf(Color(0xFF18272C), Color(0xFF0D171A))))
+            .border(1.dp, Color(0xFF263A40), heroShape)
+            .padding(16.dp),
+        verticalArrangement = Arrangement.spacedBy(13.dp)
+    ) {
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            Surface(color = Color(0xFF21351B), shape = RoundedCornerShape(14.dp)) {
+                Icon(selected.icon(), null, tint = Green, modifier = Modifier.padding(11.dp).size(24.dp))
+            }
+            Spacer(Modifier.width(11.dp))
+            Column(Modifier.weight(1f)) {
+                Text(selected.label, color = Soft, fontSize = 12.sp)
+                Text(year.summaryFor(selected), fontSize = 22.sp, fontWeight = FontWeight.Bold)
+            }
+            DataCoverageRing(recorded.size, year.months.size)
+        }
+
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(7.dp)) {
+            YearFact(
+                "Average",
+                average?.let { selected.formatValue(it) } ?: "No data",
+                Modifier.weight(1f)
+            )
+            YearFact(
+                "Best month",
+                best?.let { (index, value) ->
+                    "${year.months[index].month.format(DateTimeFormatter.ofPattern("MMM"))} · ${selected.formatValue(value)}"
+                } ?: "No data",
+                Modifier.weight(1f)
+            )
+            YearFact("Source", "Health Connect", Modifier.weight(1f))
+        }
+
+        Row(
+            Modifier.fillMaxWidth().clip(RoundedCornerShape(13.dp)).background(Bg.copy(alpha = .68f)).padding(3.dp),
+            horizontalArrangement = Arrangement.spacedBy(4.dp)
+        ) {
+            YearChartStyle.entries.forEach { style ->
+                Box(
+                    Modifier
+                        .weight(1f)
+                        .clip(RoundedCornerShape(10.dp))
+                        .background(if (chartStyle == style) Color(0xFF21351B) else Color.Transparent)
+                        .clickable { chartStyle = style }
+                        .padding(vertical = 10.dp),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text(style.label, color = if (chartStyle == style) Green else Soft, fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
+                }
+            }
+        }
+
+        HealthYearTrendChart(year.months, selected, chartStyle)
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+            listOf(0, 4, 8, 11).forEach { index ->
+                Text(year.months[index].month.format(DateTimeFormatter.ofPattern("MMM")), color = Soft, fontSize = 11.sp)
+            }
+        }
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Box(Modifier.width(18.dp).height(2.dp).background(Soft.copy(alpha = .55f)))
+            Spacer(Modifier.width(7.dp))
+            Text("Missing month = no Health Connect record", color = Soft, fontSize = 11.sp)
+        }
+    }
+
+    Text("Explore your health", fontWeight = FontWeight.Bold, fontSize = 18.sp)
+    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+        YearMetricView.entries.forEach { metric ->
+            val hasData = year.months.any { it.valueFor(metric) != null }
+            val chosen = selected == metric
+            Column(
+                Modifier
+                    .weight(1f)
+                    .clip(RoundedCornerShape(14.dp))
+                    .background(if (chosen) Color(0xFF1D3018) else Panel)
+                    .border(1.dp, if (chosen) Green.copy(alpha = .75f) else Color(0xFF29373C), RoundedCornerShape(14.dp))
+                    .clickable(enabled = hasData) { selected = metric }
+                    .padding(vertical = 9.dp),
+                horizontalAlignment = Alignment.CenterHorizontally
+            ) {
+                Icon(metric.icon(), null, tint = if (chosen) Green else Soft, modifier = Modifier.size(19.dp))
+                Spacer(Modifier.height(4.dp))
+                Text(metric.shortLabel, color = if (hasData) if (chosen) Green else Soft else Soft.copy(alpha = .35f), fontSize = 9.sp)
+            }
+        }
+    }
+}
+
+@Composable private fun DataCoverageRing(recordedMonths: Int, totalMonths: Int) {
+    Box(Modifier.size(68.dp), contentAlignment = Alignment.Center) {
+        Canvas(Modifier.fillMaxSize()) {
+            val line = 6.dp.toPx()
+            drawArc(Soft.copy(alpha = .2f), -90f, 360f, false, style = Stroke(line, cap = StrokeCap.Round))
+            if (totalMonths > 0 && recordedMonths > 0) {
+                drawArc(Green, -90f, 360f * recordedMonths / totalMonths, false, style = Stroke(line, cap = StrokeCap.Round))
+            }
+        }
+        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+            Text("$recordedMonths/$totalMonths", fontWeight = FontWeight.Bold, fontSize = 13.sp)
+            Text("months", color = Soft, fontSize = 8.sp)
+        }
+    }
+}
+
+@Composable private fun YearFact(label: String, value: String, modifier: Modifier) {
+    Column(
+        modifier.clip(RoundedCornerShape(13.dp)).background(Bg.copy(alpha = .42f)).padding(9.dp),
+        verticalArrangement = Arrangement.spacedBy(3.dp)
+    ) {
+        Text(label, color = Soft, fontSize = 9.sp)
+        Text(value, maxLines = 1, fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
+    }
+}
+
+@Composable private fun HealthYearTrendChart(months: List<HealthMonthPoint>, metric: YearMetricView, style: YearChartStyle) {
+    val values = months.map { it.valueFor(metric) }
+    Canvas(Modifier.fillMaxWidth().height(190.dp)) {
+        val present = values.mapIndexedNotNull { index, value -> value?.let { index to it } }
+        if (present.isEmpty()) return@Canvas
+
+        val minimum = present.minOf { it.second }
+        val maximum = present.maxOf { it.second }
+        val span = maxOf(maximum - minimum, maximum * .08, 1.0)
+        val lower = if (metric == YearMetricView.HEART_RATE || metric == YearMetricView.WEIGHT) minimum - span * .32 else 0.0
+        val upper = maximum + span * .12
+        val top = 9.dp.toPx()
+        val baseline = size.height - 4.dp.toPx()
+        val plotHeight = baseline - top
+        val slot = size.width / values.size.coerceAtLeast(1)
+        fun point(index: Int, value: Double) = Offset(
+            x = slot * (index + .5f),
+            y = top + ((upper - value) / (upper - lower)).toFloat() * plotHeight
+        )
+        fun smoothPath(points: List<Offset>): Path = Path().apply {
+            if (points.isEmpty()) return@apply
+            moveTo(points.first().x, points.first().y)
+            points.drop(1).forEachIndexed { index, current ->
+                val previous = points[index]
+                val middle = (previous.x + current.x) / 2f
+                cubicTo(middle, previous.y, middle, current.y, current.x, current.y)
+            }
+        }
+
+        listOf(0f, .5f, 1f).forEach { position ->
+            val y = top + plotHeight * position
+            drawLine(
+                Soft.copy(alpha = if (position == 1f) .27f else .14f),
+                Offset(0f, y),
+                Offset(size.width, y),
+                strokeWidth = 1.dp.toPx(),
+                pathEffect = PathEffect.dashPathEffect(floatArrayOf(3.dp.toPx(), 5.dp.toPx()))
+            )
+        }
+
+        if (style == YearChartStyle.HYBRID) {
+            val barWidth = (slot * .52f).coerceIn(10.dp.toPx(), 18.dp.toPx())
+            present.forEach { (index, value) ->
+                val graphPoint = point(index, value)
+                drawRoundRect(
+                    brush = Brush.verticalGradient(listOf(Color(0xFF9BE969), Color(0xFF4F9C2B)), startY = graphPoint.y, endY = baseline),
+                    topLeft = Offset(graphPoint.x - barWidth / 2f, graphPoint.y),
+                    size = Size(barWidth, baseline - graphPoint.y),
+                    cornerRadius = CornerRadius(5.dp.toPx()),
+                    alpha = .72f
+                )
+            }
+        }
+
+        val segments = mutableListOf<List<Offset>>()
+        var segment = mutableListOf<Offset>()
+        values.forEachIndexed { index, value ->
+            if (value == null) {
+                if (segment.isNotEmpty()) segments += segment.toList()
+                segment = mutableListOf()
+            } else segment += point(index, value)
+        }
+        if (segment.isNotEmpty()) segments += segment.toList()
+
+        segments.forEach { points ->
+            if (style == YearChartStyle.TREND && points.size > 1) {
+                val area = smoothPath(points).apply {
+                    lineTo(points.last().x, baseline)
+                    lineTo(points.first().x, baseline)
+                    close()
+                }
+                drawPath(area, Brush.verticalGradient(listOf(Green.copy(alpha = .38f), Green.copy(alpha = .01f)), top, baseline))
+            }
+            if (points.size > 1) {
+                val path = smoothPath(points)
+                drawPath(path, Green.copy(alpha = .18f), style = Stroke(8.dp.toPx(), cap = StrokeCap.Round))
+                drawPath(path, Color(0xFF9BE969), style = Stroke(3.dp.toPx(), cap = StrokeCap.Round))
+            }
+            points.forEach { graphPoint ->
+                drawCircle(Color(0xFF9BE969), 5.dp.toPx(), graphPoint)
+                drawCircle(Bg, 2.8.dp.toPx(), graphPoint)
+            }
+        }
+
+        values.forEachIndexed { index, value ->
+            if (value == null) {
+                val center = slot * (index + .5f)
+                drawLine(
+                    Soft.copy(alpha = .55f),
+                    Offset(center - 7.dp.toPx(), baseline - 2.dp.toPx()),
+                    Offset(center + 7.dp.toPx(), baseline - 2.dp.toPx()),
+                    strokeWidth = 2.dp.toPx(),
+                    pathEffect = PathEffect.dashPathEffect(floatArrayOf(3.dp.toPx(), 3.dp.toPx()))
+                )
+            }
+        }
+    }
+}
+
+private fun HealthMonthPoint.valueFor(metric: YearMetricView): Double? = when (metric) {
+    YearMetricView.STEPS -> steps?.toDouble()
+    YearMetricView.ACTIVE_CALORIES -> activeCalories?.toDouble()
+    YearMetricView.SLEEP -> sleepMinutes?.div(60.0)
+    YearMetricView.HEART_RATE -> averageHeartRate?.toDouble()
+    YearMetricView.WEIGHT -> averageWeightKg
+}
+
+private fun YearMetricView.icon(): ImageVector = when (this) {
+    YearMetricView.STEPS -> Icons.Default.DirectionsWalk
+    YearMetricView.ACTIVE_CALORIES -> Icons.Default.LocalFireDepartment
+    YearMetricView.SLEEP -> Icons.Default.Bedtime
+    YearMetricView.HEART_RATE -> Icons.Default.FavoriteBorder
+    YearMetricView.WEIGHT -> Icons.Default.MonitorWeight
+}
+
+private fun YearMetricView.formatValue(value: Double): String = when (this) {
+    YearMetricView.STEPS -> formatWholeNumber(value.roundToLong())
+    YearMetricView.ACTIVE_CALORIES -> "${formatWholeNumber(value.roundToLong())} kcal"
+    YearMetricView.SLEEP -> "%.0f h".format(value)
+    YearMetricView.HEART_RATE -> "%.0f bpm".format(value)
+    YearMetricView.WEIGHT -> "%.1f kg".format(value)
+}
+
+private fun HealthYearSnapshot.summaryFor(metric: YearMetricView): String = when (metric) {
+    YearMetricView.STEPS -> totalSteps.healthValue { formatWholeNumber(it) }
+    YearMetricView.ACTIVE_CALORIES -> totalActiveCalories.healthValue { "${formatWholeNumber(it.toLong())} kcal" }
+    YearMetricView.SLEEP -> recordedSleepMinutes.healthValue { "${formatWholeNumber(it / 60)} h" }
+    YearMetricView.HEART_RATE -> averageHeartRate.healthValue { "$it bpm avg" }
+    YearMetricView.WEIGHT -> averageWeightKg.healthValue { "%.1f kg avg".format(it) }
+}
+
+private fun formatWholeNumber(value: Long): String = String.format(Locale.getDefault(), "%,d", value)
 @Composable private fun MetricCard(title: String, value: String, change: String) = Surface(color = Panel, shape = RoundedCornerShape(14.dp)) { Row(Modifier.fillMaxWidth().padding(18.dp), horizontalArrangement = Arrangement.SpaceBetween) { Column { Text(title, color = Soft); Text(value, fontWeight = FontWeight.Bold) }; Text(change, color = Green) } }
 
 @Composable private fun HealthScreen(back: () -> Unit) {
@@ -556,6 +894,7 @@ private fun <T> HealthMetric<T>.dashboardText(format: (T) -> String): String =
         HealthMetricRow(Icons.Default.Bedtime, "Sleep", "Last night · 18:00–12:00", data.lastNightSleepMinutes) { "${it / 60}h ${it % 60}m" }
         HealthMetricRow(Icons.Default.LocalFireDepartment, "Active calories", "Burned today", data.activeCaloriesToday) { "$it kcal" }
         HealthMetricRow(Icons.Default.MonitorWeight, "Weight", "Latest measurement in the past 30 days", data.latestWeightKg) { "%.1f kg".format(it) }
+        HistoryAccessRow(manager.supportsHistoryRead(), manager.hasHistoryPermission(granted))
         (connectionError ?: data.error)?.let { Text(it, color = MaterialTheme.colorScheme.error) }
         Button({
             connectionError = null
@@ -564,6 +903,35 @@ private fun <T> HealthMetric<T>.dashboardText(format: (T) -> String): String =
                     .onFailure { connectionError = "Health Connect could not be opened: ${it.message ?: "unknown error"}" }
             } else scope.launch { data = manager.sync(granted) }
         }, Modifier.fillMaxWidth().height(54.dp), shape = RoundedCornerShape(16.dp), enabled = manager.availability() == androidx.health.connect.client.HealthConnectClient.SDK_AVAILABLE, colors = ButtonDefaults.buttonColors(Green)) { Text(if (manager.hasAllMetricPermissions(granted)) "Sync Now" else "Manage Health Connect access", fontWeight = FontWeight.Bold) }
+    }
+}
+
+@Composable private fun HistoryAccessRow(supported: Boolean, granted: Boolean) = Surface(color = Panel, shape = RoundedCornerShape(16.dp)) {
+    Row(Modifier.fillMaxWidth().padding(15.dp), verticalAlignment = Alignment.CenterVertically) {
+        Surface(color = Panel2, shape = CircleShape) { Icon(Icons.Default.History, null, tint = Green, modifier = Modifier.padding(10.dp).size(22.dp)) }
+        Spacer(Modifier.width(12.dp))
+        Column(Modifier.weight(1f)) {
+            Text("Past 12 months", fontWeight = FontWeight.SemiBold)
+            Text(
+                when {
+                    !supported -> "Update Health Connect to enable history"
+                    granted -> "Past data access granted"
+                    else -> "Allow access to data older than 30 days"
+                },
+                color = Soft,
+                fontSize = 11.sp
+            )
+        }
+        Icon(
+            when {
+                !supported -> Icons.Default.Error
+                granted -> Icons.Default.CheckCircle
+                else -> Icons.Default.Lock
+            },
+            null,
+            tint = if (granted) Green else Soft,
+            modifier = Modifier.size(19.dp)
+        )
     }
 }
 
