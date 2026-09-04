@@ -47,4 +47,14 @@ class HealthTimeRangesTest {
         assertEquals(Instant.parse("2026-10-24T22:00:00Z"), range.start)
         assertEquals(now, range.end)
     }
+
+    @Test
+    fun yearOverviewContainsCurrentAndPreviousElevenCalendarMonths() {
+        val now = Instant.parse("2026-09-03T08:15:00Z")
+
+        val range = HealthTimeRanges.lastTwelveCalendarMonths(now, amsterdam)
+
+        assertEquals("2025-10-01T00:00", range.start.toString())
+        assertEquals("2026-09-03T10:15", range.end.toString())
+    }
 }
